@@ -22,6 +22,7 @@ class Config:
     llm_enabled: bool
 
     # Strategy
+    arbitrage_enabled: bool
     min_profit_threshold: float
     max_trade_size: float
     scan_interval: int
@@ -42,6 +43,17 @@ class Config:
     # Parallel scanning
     scanner_workers: int
     markets_per_worker: int
+
+    # Tight Market Crypto strategy
+    tmc_enabled: bool
+    tmc_max_investment: float
+    tmc_min_side_investment: float
+    tmc_tightness_threshold: float
+    tmc_min_tight_ratio: float
+    tmc_entry_window: float
+    tmc_max_daily_loss: float
+    tmc_discovery_interval: int
+    tmc_crypto_assets: str
 
     @classmethod
     def from_env(cls, env_path: str | None = None) -> "Config":
@@ -78,6 +90,7 @@ class Config:
             openrouter_api_key=openrouter_key,
             llm_model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-20250514"),
             llm_enabled=llm_enabled,
+            arbitrage_enabled=_bool(os.getenv("ARBITRAGE_ENABLED", "true")),
             min_profit_threshold=float(
                 os.getenv("MIN_PROFIT_THRESHOLD", "0.025")
             ),
@@ -98,6 +111,16 @@ class Config:
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             scanner_workers=int(os.getenv("SCANNER_WORKERS", "5")),
             markets_per_worker=int(os.getenv("MARKETS_PER_WORKER", "200")),
+            # Tight Market Crypto
+            tmc_enabled=_bool(os.getenv("TMC_ENABLED", "false")),
+            tmc_max_investment=float(os.getenv("TMC_MAX_INVESTMENT", "2.0")),
+            tmc_min_side_investment=float(os.getenv("TMC_MIN_SIDE_INVESTMENT", "1.0")),
+            tmc_tightness_threshold=float(os.getenv("TMC_TIGHTNESS_THRESHOLD", "0.10")),
+            tmc_min_tight_ratio=float(os.getenv("TMC_MIN_TIGHT_RATIO", "0.80")),
+            tmc_entry_window=float(os.getenv("TMC_ENTRY_WINDOW", "5.0")),
+            tmc_max_daily_loss=float(os.getenv("TMC_MAX_DAILY_LOSS", "20.0")),
+            tmc_discovery_interval=int(os.getenv("TMC_DISCOVERY_INTERVAL", "30")),
+            tmc_crypto_assets=os.getenv("TMC_CRYPTO_ASSETS", "BTC,ETH,SOL,XRP"),
         )
 
     @property

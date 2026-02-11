@@ -7,6 +7,7 @@ from colorama import Fore, Style
 from src.core.config import Config
 from src.core.logger import setup_logger
 from src.strategies.arbitrage import ArbitrageCoordinator
+from src.strategies.tight_market_crypto import TightMarketCryptoCoordinator
 
 BANNER = f"""
 {Fore.CYAN}╔══════════════════════════════════════════════════╗
@@ -34,28 +35,59 @@ def main() -> None:
     logger.info(f"LLM validation: {'enabled' if config.llm_enabled else 'disabled'}")
     logger.info(f"WebSocket: {'enabled' if config.use_websocket else 'disabled'}")
 
-    # Initialize and start coordinator
-    coordinator = ArbitrageCoordinator(config)
+    # Initialize strategies
+    arb_coordinator: ArbitrageCoordinator | None = None
+    tmc_coordinator: TightMarketCryptoCoordinator | None = None
+
+    if config.arbitrage_enabled:
+        logger.info(f"Arbitrage: {Fore.GREEN}enabled{Style.RESET_ALL}")
+        arb_coordinator = ArbitrageCoordinator(config)
+    else:
+        logger.info(f"Arbitrage: {Fore.RED}disabled{Style.RESET_ALL}")
+
+    if config.tmc_enabled:
+        logger.info(f"Tight Market Crypto: {Fore.GREEN}enabled{Style.RESET_ALL}")
+        logger.info(f"  Max investment: ${config.tmc_max_investment:.2f}")
+        logger.info(f"  Entry window: {config.tmc_entry_window:.1f}s")
+        logger.info(f"  Tightness threshold: {config.tmc_tightness_threshold:.0%}")
+        logger.info(f"  Assets: {config.tmc_crypto_assets}")
+        logger.info(f"  Max daily loss: ${config.tmc_max_daily_loss:.2f}")
+        tmc_coordinator = TightMarketCryptoCoordinator(config)
+    else:
+        logger.info(f"Tight Market Crypto: {Fore.RED}disabled{Style.RESET_ALL}")
+
+    if not arb_coordinator and not tmc_coordinator:
+        logger.error("No strategies enabled. Set ARBITRAGE_ENABLED=true or TMC_ENABLED=true")
+        sys.exit(1)
+
     stop_event = threading.Event()
 
     def shutdown(sig, frame):
         if stop_event.is_set():
-            # Second Ctrl+C → force exit
             logger.info("Force exit.")
             sys.exit(1)
         logger.info("Shutting down (Ctrl+C again to force)...")
-        coordinator.stop()
+        if arb_coordinator:
+            arb_coordinator.stop()
+        if tmc_coordinator:
+            tmc_coordinator.stop()
         stop_event.set()
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    coordinator.start()
+    if arb_coordinator:
+        arb_coordinator.start()
+    if tmc_coordinator:
+        tmc_coordinator.start()
 
     # Block main thread until shutdown signal
     while not stop_event.is_set():
         stop_event.wait(timeout=1)
-    coordinator.join(timeout=5)
+    if arb_coordinator:
+        arb_coordinator.join(timeout=5)
+    if tmc_coordinator:
+        tmc_coordinator.join(timeout=5)
     logger.info("Polyagent stopped.")
 
 
