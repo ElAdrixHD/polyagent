@@ -105,7 +105,7 @@ class TightnessTracker:
         with self._lock:
             if market.condition_id in self._trackers:
                 return
-            tracker = MarketTracker(market, self.config.tmc_tightness_threshold)
+            tracker = MarketTracker(market, 0.10)
             self._trackers[market.condition_id] = tracker
             self._token_to_market[market.token_ids[0]] = market.condition_id
             self._token_to_market[market.token_ids[1]] = market.condition_id

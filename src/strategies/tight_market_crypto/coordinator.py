@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from src.core.client import PolymarketClient
 from src.core.config import Config
 
+from .binance_feed import BinancePriceFeed
 from .executor import TightMarketCryptoExecutor
 from .market_finder import CryptoMarketFinder
 from .signal_engine import SignalEngine
@@ -30,7 +31,10 @@ class TightMarketCryptoCoordinator:
         self._client = PolymarketClient(config)
         self._finder = CryptoMarketFinder(config)
         self._tracker = TightnessTracker(config)
-        self._signal_engine = SignalEngine(config, self._tracker, self._client)
+        self._binance_feed = BinancePriceFeed()
+        self._signal_engine = SignalEngine(
+            config, self._tracker, self._client, self._binance_feed
+        )
         self._executor = TightMarketCryptoExecutor(self._client, config)
 
         self._last_discovery = 0.0
@@ -41,6 +45,7 @@ class TightMarketCryptoCoordinator:
         logger.info(f"[TMC] Starting — tracking: {assets}")
 
         self._tracker.start()
+        self._binance_feed.start()
 
         self._thread = threading.Thread(
             target=self._main_loop, name="TMC-Main", daemon=True
@@ -51,6 +56,7 @@ class TightMarketCryptoCoordinator:
         logger.info("[TMC] Shutting down...")
         self._running = False
         self._tracker.stop()
+        self._binance_feed.stop()
 
     def join(self, timeout: float = 5.0) -> None:
         if self._thread:
@@ -117,6 +123,20 @@ class TightMarketCryptoCoordinator:
         tracked = len(self._tracker.tracked_condition_ids())
         if new_count:
             logger.info(f"[TMC] Added {new_count} new markets (tracking {tracked} total)")
+
+        # Capture strike prices for markets whose window has opened
+        for cid in self._tracker.tracked_condition_ids():
+            market = self._tracker.get_tracked_market(cid)
+            if not market or market.strike_price is not None:
+                continue
+            if market.start_date and market.start_date <= now:
+                price = self._binance_feed.get_price(market.asset)
+                if price is not None:
+                    market.strike_price = price
+                    logger.info(
+                        f"[TMC] Strike captured: {market.asset}=${price:,.2f} "
+                        f"for '{market.question[:50]}'"
+                    )
 
         # Status summary of tracked markets
         if tracked > 0:

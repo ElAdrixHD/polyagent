@@ -3,6 +3,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -23,8 +24,9 @@ ASSET_PATTERNS: dict[str, re.Pattern] = {
 }
 
 # Pattern matching 15-minute window markets (e.g. "11:15AM-11:30AM")
+# Group 1 captures start time (e.g. "11:15AM"), group 2 captures end time
 FIFTEEN_MIN_WINDOW_PATTERN = re.compile(
-    r"\d{1,2}:\d{2}\s*[AP]M\s*-\s*\d{1,2}:\d{2}\s*[AP]M", re.IGNORECASE
+    r"(\d{1,2}:\d{2}\s*[AP]M)\s*-\s*(\d{1,2}:\d{2}\s*[AP]M)", re.IGNORECASE
 )
 
 
@@ -118,6 +120,9 @@ class CryptoMarketFinder:
         if not m.get("active", True):
             return None
 
+        # Parse start time from question (e.g. "2:00PM" from "2:00PM-2:15PM")
+        start_date = self._parse_start_time(question, end_date)
+
         return CryptoMarket(
             condition_id=m.get("conditionId", m.get("id", "")),
             question=question,
@@ -126,6 +131,7 @@ class CryptoMarketFinder:
             asset=asset,
             volume=float(m.get("volume", 0) or 0),
             liquidity=float(m.get("liquidity", 0) or 0),
+            start_date=start_date,
         )
 
     def _extract_asset(self, question: str) -> str | None:
@@ -133,3 +139,27 @@ class CryptoMarketFinder:
             if pattern.search(question):
                 return asset
         return None
+
+    @staticmethod
+    def _parse_start_time(question: str, end_date: datetime) -> datetime | None:
+        """Parse start time from question text like '2:00PM-2:15PM'.
+
+        Uses end_date's date and assumes ET (US/Eastern) timezone,
+        then converts to UTC.
+        """
+        match = FIFTEEN_MIN_WINDOW_PATTERN.search(question)
+        if not match:
+            return None
+
+        start_str = match.group(1).strip()  # e.g. "2:00PM"
+        try:
+            et = ZoneInfo("America/New_York")
+            # Parse "2:00PM" into hour/minute
+            t = datetime.strptime(start_str, "%I:%M%p")
+            # Combine with end_date's date in ET, then convert to UTC
+            start_et = end_date.astimezone(et).replace(
+                hour=t.hour, minute=t.minute, second=0, microsecond=0
+            )
+            return start_et.astimezone(timezone.utc)
+        except (ValueError, AttributeError):
+            return None

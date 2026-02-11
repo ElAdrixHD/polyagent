@@ -56,7 +56,9 @@ class TightMarketCryptoExecutor:
                 f"[TMC] [DRY RUN] Would buy "
                 f"YES@{opp.yes_ask:.4f} ${opp.amount_per_side:.2f} + "
                 f"NO@{opp.no_ask:.4f} ${opp.amount_per_side:.2f} = "
-                f"${opp.total_cost:.2f} on '{opp.market.question[:50]}'"
+                f"${opp.total_cost:.2f} on '{opp.market.question[:50]}' | "
+                f"strike=${opp.strike_price:,.2f} dist=${opp.distance:.2f} "
+                f"expected_move=${opp.expected_move:.2f}"
             )
             result = TightMarketTradeResult(
                 opportunity=opp,
@@ -163,6 +165,10 @@ class TightMarketCryptoExecutor:
             "no_ask": result.opportunity.no_ask,
             "amount_per_side": result.opportunity.amount_per_side,
             "total_cost": result.opportunity.total_cost,
+            "strike_price": result.opportunity.strike_price,
+            "current_crypto_price": result.opportunity.current_crypto_price,
+            "distance": result.opportunity.distance,
+            "expected_move": result.opportunity.expected_move,
             "tight_ratio": result.opportunity.profile.tight_ratio,
             "avg_spread": result.opportunity.profile.avg_spread,
             "seconds_remaining": result.opportunity.profile.seconds_remaining,

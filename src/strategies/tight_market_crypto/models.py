@@ -11,6 +11,8 @@ class CryptoMarket:
     asset: str  # BTC, ETH, SOL, XRP
     volume: float = 0.0
     liquidity: float = 0.0
+    start_date: datetime | None = None  # When the 15-min window opens
+    strike_price: float | None = None  # Binance price captured at start_date
 
 
 @dataclass
@@ -41,8 +43,12 @@ class TightMarketOpportunity:
     profile: TightnessProfile
     yes_ask: float
     no_ask: float
-    amount_per_side: float  # USD amount per order (e.g. $1)
+    amount_per_side: float  # USD per side
     total_cost: float  # amount_per_side * 2
+    strike_price: float  # captured at market open
+    current_crypto_price: float  # Binance price at signal time
+    distance: float  # abs(current - strike) in $
+    expected_move: float  # volatility-based expected move in $
     timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
 

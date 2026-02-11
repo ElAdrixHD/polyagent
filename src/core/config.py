@@ -47,13 +47,12 @@ class Config:
     # Tight Market Crypto strategy
     tmc_enabled: bool
     tmc_max_investment: float
-    tmc_min_side_investment: float
-    tmc_tightness_threshold: float
-    tmc_min_tight_ratio: float
     tmc_entry_window: float
     tmc_max_daily_loss: float
     tmc_discovery_interval: int
     tmc_crypto_assets: str
+    tmc_volatility_multiplier: float
+    tmc_volatility_window: int
 
     @classmethod
     def from_env(cls, env_path: str | None = None) -> "Config":
@@ -114,13 +113,12 @@ class Config:
             # Tight Market Crypto
             tmc_enabled=_bool(os.getenv("TMC_ENABLED", "false")),
             tmc_max_investment=float(os.getenv("TMC_MAX_INVESTMENT", "2.0")),
-            tmc_min_side_investment=float(os.getenv("TMC_MIN_SIDE_INVESTMENT", "1.0")),
-            tmc_tightness_threshold=float(os.getenv("TMC_TIGHTNESS_THRESHOLD", "0.10")),
-            tmc_min_tight_ratio=float(os.getenv("TMC_MIN_TIGHT_RATIO", "0.80")),
-            tmc_entry_window=float(os.getenv("TMC_ENTRY_WINDOW", "5.0")),
+            tmc_entry_window=float(os.getenv("TMC_ENTRY_WINDOW", "90.0")),
             tmc_max_daily_loss=float(os.getenv("TMC_MAX_DAILY_LOSS", "20.0")),
             tmc_discovery_interval=int(os.getenv("TMC_DISCOVERY_INTERVAL", "30")),
             tmc_crypto_assets=os.getenv("TMC_CRYPTO_ASSETS", "BTC,ETH,SOL,XRP"),
+            tmc_volatility_multiplier=float(os.getenv("TMC_VOLATILITY_MULTIPLIER", "2.0")),
+            tmc_volatility_window=int(os.getenv("TMC_VOLATILITY_WINDOW", "300")),
         )
 
     @property

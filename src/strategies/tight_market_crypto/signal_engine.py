@@ -3,6 +3,7 @@ import logging
 from src.core.client import PolymarketClient
 from src.core.config import Config
 
+from .binance_feed import BinancePriceFeed
 from .models import TightMarketOpportunity
 from .tightness_tracker import TightnessTracker
 
@@ -15,15 +16,18 @@ class SignalEngine:
         config: Config,
         tracker: TightnessTracker,
         client: PolymarketClient,
+        binance_feed: BinancePriceFeed,
     ):
         self.config = config
         self.tracker = tracker
         self.client = client
+        self.binance_feed = binance_feed
         self._fired: set[str] = set()  # condition_ids already fired
 
     def check_signals(self) -> list[TightMarketOpportunity]:
         opportunities: list[TightMarketOpportunity] = []
         profiles = self.tracker.get_all_profiles()
+        K = self.config.tmc_volatility_multiplier
 
         for profile in profiles:
             cid = profile.market.condition_id
@@ -34,52 +38,50 @@ class SignalEngine:
             if cid in self._fired:
                 continue
 
-            # Log markets approaching entry window
-            if 0 < remaining <= self.config.tmc_entry_window + 5:
-                current_spread = abs(profile.current_yes - 0.5)
-                logger.info(
-                    f"[TMC] CHECK {asset} '{q}' | "
-                    f"remaining={remaining:.1f}s | "
-                    f"snapshots={len(profile.snapshots)} | "
-                    f"YES={profile.current_yes:.3f} NO={profile.current_no:.3f} | "
-                    f"spread={current_spread:.4f} | "
-                    f"tight_ratio={profile.tight_ratio:.0%} avg_spread={profile.avg_spread:.4f}"
-                )
+            # Need strike price to evaluate
+            if profile.market.strike_price is None:
+                continue
 
-            # Condition 1: in the last N seconds
+            # Must be in the entry window
             if remaining <= 0 or remaining > self.config.tmc_entry_window:
                 continue
 
-            # Condition 2: tight throughout the window
-            if profile.tight_ratio < self.config.tmc_min_tight_ratio:
+            # Get live crypto price and volatility
+            current_price = self.binance_feed.get_price(asset)
+            expected_move = self.binance_feed.get_expected_move(
+                asset, remaining, self.config.tmc_volatility_window
+            )
+
+            if current_price is None or expected_move is None:
                 logger.info(
                     f"[TMC] SKIP {asset} '{q}' | "
-                    f"tight_ratio={profile.tight_ratio:.0%} < "
-                    f"min={self.config.tmc_min_tight_ratio:.0%}"
+                    f"no Binance data (price={current_price} expected_move={expected_move})"
                 )
                 continue
 
-            # Condition 3: still tight NOW
-            current_spread = abs(profile.current_yes - 0.5)
-            if current_spread > self.config.tmc_tightness_threshold:
+            strike = profile.market.strike_price
+            distance = abs(current_price - strike)
+
+            # KEY SIGNAL: is the price close enough that a reversal is plausible?
+            if expected_move <= 0 or distance / expected_move > K:
                 logger.info(
                     f"[TMC] SKIP {asset} '{q}' | "
-                    f"current_spread={current_spread:.4f} > "
-                    f"threshold={self.config.tmc_tightness_threshold}"
+                    f"dist=${distance:.2f} > {K}x expected_move=${expected_move:.2f} | "
+                    f"remaining={remaining:.0f}s"
                 )
                 continue
 
-            # Condition 4: need enough snapshots to be meaningful
-            if len(profile.snapshots) < 5:
-                logger.info(
-                    f"[TMC] SKIP {asset} '{q}' | "
-                    f"only {len(profile.snapshots)} snapshots (need >= 5)"
-                )
-                continue
+            ratio = distance / expected_move if expected_move > 0 else 0
 
-            # Condition 5: get live asks from CLOB
+            logger.info(
+                f"[TMC] CHECK {asset} '{q}' | "
+                f"price=${current_price:,.2f} strike=${strike:,.2f} dist=${distance:.2f} | "
+                f"expected_move=${expected_move:.2f} (ratio={ratio:.2f} < K={K}) | "
+                f"remaining={remaining:.0f}s | snaps={len(profile.snapshots)}"
+            )
+
+            # Get live asks from CLOB
             token_ids = profile.market.token_ids
-            logger.info(f"[TMC] Fetching live asks for {asset} '{q}'...")
             yes_ask = self.client.get_best_ask(token_ids[0])
             no_ask = self.client.get_best_ask(token_ids[1])
 
@@ -107,17 +109,20 @@ class SignalEngine:
                 no_ask=no_ask,
                 amount_per_side=amount_per_side,
                 total_cost=total_cost,
+                strike_price=strike,
+                current_crypto_price=current_price,
+                distance=distance,
+                expected_move=expected_move,
             )
             opportunities.append(opp)
             self._fired.add(cid)
 
             logger.info(
-                f"[TMC] >>> SIGNAL FIRED: {asset} "
-                f"'{q}' | "
+                f"[TMC] >>> SIGNAL FIRED: {asset} '{q}' | "
                 f"YES=${yes_ask:.3f} NO=${no_ask:.3f} | "
-                f"tight_ratio={profile.tight_ratio:.0%} "
-                f"avg_spread={profile.avg_spread:.4f} | "
-                f"remaining={remaining:.1f}s | "
+                f"price=${current_price:,.2f} strike=${strike:,.2f} "
+                f"dist=${distance:.2f} expected=${expected_move:.2f} | "
+                f"remaining={remaining:.0f}s | "
                 f"${amount_per_side:.2f}/side = ${total_cost:.2f} total"
             )
 
