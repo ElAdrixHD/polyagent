@@ -54,6 +54,9 @@ class Config:
     tmc_crypto_assets: str
     tmc_volatility_multiplier: float
     tmc_volatility_window: int
+    tmc_volatility_boost_threshold: float
+    tmc_volatility_boost_factor: float
+    tmc_min_minority_ask: float
 
     @classmethod
     def from_env(cls, env_path: str | None = None) -> "Config":
@@ -121,6 +124,9 @@ class Config:
             tmc_crypto_assets=os.getenv("TMC_CRYPTO_ASSETS", "BTC,ETH,SOL,XRP"),
             tmc_volatility_multiplier=float(os.getenv("TMC_VOLATILITY_MULTIPLIER", "2.0")),
             tmc_volatility_window=int(os.getenv("TMC_VOLATILITY_WINDOW", "300")),
+            tmc_volatility_boost_threshold=float(os.getenv("TMC_VOLATILITY_BOOST_THRESHOLD", "10.0")),
+            tmc_volatility_boost_factor=float(os.getenv("TMC_VOLATILITY_BOOST_FACTOR", "3.0")),
+            tmc_min_minority_ask=float(os.getenv("TMC_MIN_MINORITY_ASK", "0.05")),
         )
 
     @property

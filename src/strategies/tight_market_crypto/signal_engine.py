@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 
 from src.core.client import PolymarketClient
 from src.core.config import Config
@@ -23,6 +24,7 @@ class SignalEngine:
         self.client = client
         self.binance_feed = binance_feed
         self._fired: set[str] = set()  # condition_ids already fired
+        self._skipped_signals: dict[str, list[dict]] = {}  # cid -> list of skip entries
 
     def check_signals(self) -> list[TightMarketOpportunity]:
         opportunities: list[TightMarketOpportunity] = []
@@ -52,35 +54,59 @@ class SignalEngine:
 
             # Get live crypto price and volatility
             current_price = self.binance_feed.get_price(asset)
-            expected_move = self.binance_feed.get_expected_move(
+            raw_expected_move = self.binance_feed.get_expected_move(
                 asset, remaining, self.config.tmc_volatility_window
             )
 
-            if current_price is None or expected_move is None:
+            if current_price is None or raw_expected_move is None:
                 logger.info(
                     f"[TMC] SKIP {asset} '{q}' | "
-                    f"no Binance data (price={current_price} expected_move={expected_move})"
+                    f"no Binance data (price={current_price} expected_move={raw_expected_move})"
                 )
                 continue
+
+            # Boost expected_move in final seconds (volatility explodes near expiry)
+            boosted = remaining <= self.config.tmc_volatility_boost_threshold
+            if boosted:
+                expected_move = raw_expected_move * self.config.tmc_volatility_boost_factor
+            else:
+                expected_move = raw_expected_move
 
             strike = profile.market.strike_price
             distance = abs(current_price - strike)
 
             # KEY SIGNAL: is the price close enough that a reversal is plausible?
             if expected_move <= 0 or distance / expected_move > K:
+                boost_tag = f" [BOOST x{self.config.tmc_volatility_boost_factor}]" if boosted else ""
                 logger.info(
                     f"[TMC] SKIP {asset} '{q}' | "
-                    f"dist=${distance:.2f} > {K}x expected_move=${expected_move:.2f} | "
+                    f"dist=${distance:.2f} > {K}x expected_move=${expected_move:.2f}{boost_tag} | "
                     f"remaining={remaining:.0f}s"
+                )
+                # Record skipped signal for shadow log
+                ratio_raw = distance / raw_expected_move if raw_expected_move > 0 else float("inf")
+                boosted_em = raw_expected_move * self.config.tmc_volatility_boost_factor
+                ratio_boosted = distance / boosted_em if boosted_em > 0 else float("inf")
+                self._record_skip(
+                    cid=cid,
+                    remaining=remaining,
+                    distance=distance,
+                    raw_expected_move=raw_expected_move,
+                    boosted_expected_move=boosted_em,
+                    ratio_raw=ratio_raw,
+                    ratio_boosted=ratio_boosted,
+                    current_price=current_price,
+                    strike=strike,
                 )
                 continue
 
             ratio = distance / expected_move if expected_move > 0 else 0
+            boost_tag = f" [BOOST x{self.config.tmc_volatility_boost_factor}]" if boosted else ""
 
             logger.info(
                 f"[TMC] CHECK {asset} '{q}' | "
                 f"price=${current_price:,.2f} strike=${strike:,.2f} dist=${distance:.2f} | "
-                f"expected_move=${expected_move:.2f} (ratio={ratio:.2f} < K={K}) | "
+                f"expected_move=${expected_move:.2f} (ratio={ratio:.2f} < K={K}){boost_tag} | "
                 f"remaining={remaining:.0f}s | snaps={len(profile.snapshots)} | "
                 f"waiting for ≤{self.config.tmc_execution_window:.0f}s window"
             )
@@ -101,6 +127,17 @@ class SignalEngine:
                 logger.info(
                     f"[TMC] SKIP {asset} '{q}' | "
                     f"invalid asks (YES={yes_ask} NO={no_ask})"
+                )
+                continue
+
+            # Skip if market already too one-sided (minority ask too cheap)
+            min_ask = min(yes_ask, no_ask)
+            threshold = self.config.tmc_min_minority_ask
+            if threshold > 0 and min_ask < threshold:
+                logger.info(
+                    f"[TMC] SKIP {asset} '{q}' | "
+                    f"market too one-sided: min(ask)={min_ask:.3f} < {threshold:.3f} | "
+                    f"YES={yes_ask:.3f} NO={no_ask:.3f}"
                 )
                 continue
 
@@ -126,12 +163,45 @@ class SignalEngine:
                 f"[TMC] >>> SIGNAL FIRED: {asset} '{q}' | "
                 f"YES=${yes_ask:.3f} NO=${no_ask:.3f} | "
                 f"price=${current_price:,.2f} strike=${strike:,.2f} "
-                f"dist=${distance:.2f} expected=${expected_move:.2f} | "
+                f"dist=${distance:.2f} expected=${expected_move:.2f}{boost_tag} | "
                 f"remaining={remaining:.0f}s | "
                 f"${amount_per_side:.2f}/side = ${total_cost:.2f} total"
             )
 
         return opportunities
 
+    def get_skipped_signals(self, condition_id: str) -> list[dict]:
+        return self._skipped_signals.get(condition_id, [])
+
     def mark_expired(self, condition_id: str) -> None:
         self._fired.discard(condition_id)
+        self._skipped_signals.pop(condition_id, None)
+
+    def _record_skip(
+        self,
+        cid: str,
+        remaining: float,
+        distance: float,
+        raw_expected_move: float,
+        boosted_expected_move: float,
+        ratio_raw: float,
+        ratio_boosted: float,
+        current_price: float,
+        strike: float,
+    ) -> None:
+        K = self.config.tmc_volatility_multiplier
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "remaining": round(remaining, 1),
+            "distance": round(distance, 2),
+            "raw_expected_move": round(raw_expected_move, 2),
+            "boosted_expected_move": round(boosted_expected_move, 2),
+            "ratio_raw": round(ratio_raw, 2),
+            "ratio_boosted": round(ratio_boosted, 2),
+            "would_have_passed_with_boost": ratio_boosted <= K,
+            "current_price": round(current_price, 2),
+            "strike": round(strike, 2),
+        }
+        if cid not in self._skipped_signals:
+            self._skipped_signals[cid] = []
+        self._skipped_signals[cid].append(entry)

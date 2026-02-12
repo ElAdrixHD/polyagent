@@ -198,6 +198,15 @@ class TightMarketCryptoExecutor:
             self._killed = False
             logger.info("[TMC] Daily loss counter reset")
 
+    def get_traded_condition_ids(self) -> set[str]:
+        if not TRADES_FILE.exists():
+            return set()
+        try:
+            trades = json.loads(TRADES_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            return set()
+        return {t["condition_id"] for t in trades if t.get("condition_id")}
+
     def _save_trade(self, result: TightMarketTradeResult) -> None:
         TRADES_FILE.parent.mkdir(parents=True, exist_ok=True)
 
