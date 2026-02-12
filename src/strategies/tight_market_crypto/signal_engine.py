@@ -190,17 +190,19 @@ class SignalEngine:
         strike: float,
     ) -> None:
         K = self.config.tmc_volatility_multiplier
+        # Use enough decimal places for small-price assets (XRP, SOL)
+        decimals = 6 if strike < 10 else (4 if strike < 1000 else 2)
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "remaining": round(remaining, 1),
-            "distance": round(distance, 2),
-            "raw_expected_move": round(raw_expected_move, 2),
-            "boosted_expected_move": round(boosted_expected_move, 2),
+            "distance": round(distance, decimals),
+            "raw_expected_move": round(raw_expected_move, decimals),
+            "boosted_expected_move": round(boosted_expected_move, decimals),
             "ratio_raw": round(ratio_raw, 2),
             "ratio_boosted": round(ratio_boosted, 2),
             "would_have_passed_with_boost": ratio_boosted <= K,
-            "current_price": round(current_price, 2),
-            "strike": round(strike, 2),
+            "current_price": round(current_price, decimals),
+            "strike": round(strike, decimals),
         }
         if cid not in self._skipped_signals:
             self._skipped_signals[cid] = []
