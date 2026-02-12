@@ -48,6 +48,7 @@ class Config:
     tmc_enabled: bool
     tmc_max_investment: float
     tmc_entry_window: float
+    tmc_execution_window: float
     tmc_max_daily_loss: float
     tmc_discovery_interval: int
     tmc_crypto_assets: str
@@ -114,6 +115,7 @@ class Config:
             tmc_enabled=_bool(os.getenv("TMC_ENABLED", "false")),
             tmc_max_investment=float(os.getenv("TMC_MAX_INVESTMENT", "2.0")),
             tmc_entry_window=float(os.getenv("TMC_ENTRY_WINDOW", "90.0")),
+            tmc_execution_window=float(os.getenv("TMC_EXECUTION_WINDOW", "5.0")),
             tmc_max_daily_loss=float(os.getenv("TMC_MAX_DAILY_LOSS", "20.0")),
             tmc_discovery_interval=int(os.getenv("TMC_DISCOVERY_INTERVAL", "30")),
             tmc_crypto_assets=os.getenv("TMC_CRYPTO_ASSETS", "BTC,ETH,SOL,XRP"),

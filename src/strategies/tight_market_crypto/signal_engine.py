@@ -42,8 +42,12 @@ class SignalEngine:
             if profile.market.strike_price is None:
                 continue
 
-            # Must be in the entry window
+            # Only track within the broad entry window
             if remaining <= 0 or remaining > self.config.tmc_entry_window:
+                continue
+
+            # Only execute in the last N seconds (W-rebound window)
+            if remaining > self.config.tmc_execution_window:
                 continue
 
             # Get live crypto price and volatility
@@ -77,7 +81,8 @@ class SignalEngine:
                 f"[TMC] CHECK {asset} '{q}' | "
                 f"price=${current_price:,.2f} strike=${strike:,.2f} dist=${distance:.2f} | "
                 f"expected_move=${expected_move:.2f} (ratio={ratio:.2f} < K={K}) | "
-                f"remaining={remaining:.0f}s | snaps={len(profile.snapshots)}"
+                f"remaining={remaining:.0f}s | snaps={len(profile.snapshots)} | "
+                f"waiting for ≤{self.config.tmc_execution_window:.0f}s window"
             )
 
             # Get live asks from CLOB
