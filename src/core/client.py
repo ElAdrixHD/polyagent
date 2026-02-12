@@ -174,6 +174,40 @@ class PolymarketClient:
             outcome_prices=outcome_prices,
         )
 
+    def get_market_resolution(self, condition_id: str) -> str | None:
+        """Return 'YES' or 'NO' if the market has resolved, else None.
+
+        Queries Gamma API and inspects outcomePrices: the outcome whose
+        price is 1.0 (or closest to 1) is the winner.
+        """
+        try:
+            resp = requests.get(
+                f"{GAMMA_API_URL}/markets",
+                params={"conditionId": condition_id},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            items = resp.json()
+            if not isinstance(items, list) or not items:
+                return None
+            m = items[0]
+            raw_prices = m.get("outcomePrices", "")
+            if not raw_prices:
+                return None
+            parsed = json.loads(raw_prices) if isinstance(raw_prices, str) else raw_prices
+            prices = [float(p) for p in parsed]
+            if len(prices) != 2:
+                return None
+            # Only consider resolved if one side is clearly 1.0
+            if prices[0] >= 0.99:
+                return "YES"
+            if prices[1] >= 0.99:
+                return "NO"
+            return None
+        except Exception as e:
+            logger.debug(f"Resolution check error for {condition_id}: {e}")
+            return None
+
     def get_order_book(self, token_id: str) -> OrderBookSummary | None:
         try:
             return self.clob.get_order_book(token_id)

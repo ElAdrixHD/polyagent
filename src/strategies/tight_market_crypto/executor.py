@@ -137,6 +137,59 @@ class TightMarketCryptoExecutor:
         self._save_trade(result)
         return result
 
+    def update_outcomes_for_condition(
+        self, condition_id: str, outcome: str, final_price: float | None = None
+    ) -> None:
+        """Enrich log entries for condition_id with resolution outcome and return metrics.
+
+        Uses the Binance final_price vs strike to determine win/loss.
+        """
+        if not TRADES_FILE.exists():
+            return
+        try:
+            trades = json.loads(TRADES_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            return
+
+        changed = False
+        for entry in trades:
+            if entry.get("condition_id") != condition_id:
+                continue
+            if entry.get("outcome") is not None:
+                continue  # Already filled
+
+            yes_ask = entry.get("yes_ask", 0)
+            no_ask = entry.get("no_ask", 0)
+            amount_per_side = entry.get("amount_per_side", 0)
+            total_cost = entry.get("total_cost", 0)
+
+            if outcome == "YES" and yes_ask > 0:
+                payout = amount_per_side / yes_ask
+            elif outcome == "NO" and no_ask > 0:
+                payout = amount_per_side / no_ask
+            else:
+                continue
+
+            net_return = payout - total_cost
+            return_pct = (net_return / total_cost * 100) if total_cost > 0 else 0.0
+
+            entry["outcome"] = outcome
+            entry["payout"] = round(payout, 4)
+            entry["net_return"] = round(net_return, 4)
+            entry["return_pct"] = round(return_pct, 2)
+            if final_price is not None:
+                entry["final_crypto_price"] = final_price
+            changed = True
+
+            logger.info(
+                f"[TMC] Outcome recorded: {entry['asset']} '{entry['question'][:50]}' | "
+                f"winner={outcome} payout=${payout:.2f} net=${net_return:+.2f} ({return_pct:+.1f}%)"
+                f"{f' | final_price=${final_price:,.2f}' if final_price else ''}"
+            )
+
+        if changed:
+            TRADES_FILE.write_text(json.dumps(trades, indent=2))
+
     def _maybe_reset_daily(self) -> None:
         today = datetime.now(timezone.utc).date()
         if today != self._daily_reset:
@@ -177,6 +230,12 @@ class TightMarketCryptoExecutor:
             "cost": result.cost,
             "error": result.error,
             "dry_run": self.config.dry_run,
+            # Filled in post-resolution by update_outcomes_for_condition()
+            "outcome": None,
+            "final_crypto_price": None,
+            "payout": None,
+            "net_return": None,
+            "return_pct": None,
         }
 
         trades.append(entry)

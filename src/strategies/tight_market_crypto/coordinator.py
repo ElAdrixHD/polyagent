@@ -97,7 +97,7 @@ class TightMarketCryptoCoordinator:
     def _discover_and_clean(self) -> None:
         now = datetime.now(timezone.utc)
 
-        # Clean expired markets
+        # Clean expired markets and record outcomes using Binance price
         expired_count = 0
         for cid in list(self._tracker.tracked_condition_ids()):
             market = self._tracker.get_tracked_market(cid)
@@ -107,6 +107,22 @@ class TightMarketCryptoCoordinator:
                 logger.info(
                     f"[TMC] Expired: {market.asset} '{market.question[:50]}'"
                 )
+                # Determine outcome from Binance price at window close vs strike
+                if market.strike_price is not None:
+                    end_ts = market.end_date.timestamp()
+                    final_price = self._binance_feed.get_price_at(
+                        market.asset, end_ts
+                    )
+                    if final_price is not None:
+                        outcome = "YES" if final_price > market.strike_price else "NO"
+                        self._executor.update_outcomes_for_condition(
+                            cid, outcome, final_price
+                        )
+                        logger.info(
+                            f"[TMC] Resolved via Binance: {market.asset} "
+                            f"strike={market.strike_price:,.2f} "
+                            f"final={final_price:,.2f} → {outcome}"
+                        )
                 expired_count += 1
         if expired_count:
             logger.info(f"[TMC] Cleaned {expired_count} expired markets")

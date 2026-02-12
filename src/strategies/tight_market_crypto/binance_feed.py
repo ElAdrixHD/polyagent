@@ -65,6 +65,30 @@ class BinancePriceFeed:
         with self._lock:
             return self._prices.get(asset)
 
+    def get_price_at(self, asset: str, target_ts: float) -> float | None:
+        """Return the price closest to target_ts from history.
+
+        Falls back to latest price if no history is available.
+        """
+        with self._lock:
+            hist = self._history.get(asset)
+            if not hist:
+                return self._prices.get(asset)
+
+            best_price = None
+            best_diff = float("inf")
+            for ts, px in hist:
+                diff = abs(ts - target_ts)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_price = px
+
+            # If closest point is more than 60s away, not reliable
+            if best_price is not None and best_diff <= 60:
+                return best_price
+
+            return self._prices.get(asset)
+
     def get_volatility(self, asset: str, window_seconds: int = 300) -> float | None:
         """Compute stddev of 1-second log-returns over the given window.
 
