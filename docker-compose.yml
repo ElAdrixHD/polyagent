@@ -1,0 +1,22 @@
+services:
+  bot:
+    build: .
+    container_name: polyagent
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - polyagent-data:/app/data
+    stop_grace_period: 10s
+
+  export:
+    build: .
+    container_name: polyagent-export
+    env_file: .env
+    volumes:
+      - polyagent-data:/app/data
+    command: python data/export_data.py
+    profiles:
+      - tools
+
+volumes:
+  polyagent-data:
