@@ -135,6 +135,16 @@ class BinancePriceFeed:
 
         return vol * price * math.sqrt(max(0, seconds_remaining))
 
+    def get_price_history(
+        self, asset: str, start_ts: float, end_ts: float
+    ) -> list[tuple[float, float]]:
+        """Return list of (timestamp, price) between start_ts and end_ts."""
+        with self._lock:
+            hist = self._history.get(asset)
+            if not hist:
+                return []
+            return [(ts, px) for ts, px in hist if start_ts <= ts <= end_ts]
+
     # --- WebSocket internals ---
 
     def _ws_loop(self) -> None:

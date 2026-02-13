@@ -48,10 +48,6 @@ class SignalEngine:
             if remaining <= 0 or remaining > self.config.tmc_entry_window:
                 continue
 
-            # Only execute in the last N seconds (W-rebound window)
-            if remaining > self.config.tmc_execution_window:
-                continue
-
             # Get live crypto price and volatility
             current_price = self.binance_feed.get_price(asset)
             raw_expected_move = self.binance_feed.get_expected_move(
@@ -59,10 +55,12 @@ class SignalEngine:
             )
 
             if current_price is None or raw_expected_move is None:
-                logger.info(
-                    f"[TMC] SKIP {asset} '{q}' | "
-                    f"no Binance data (price={current_price} expected_move={raw_expected_move})"
-                )
+                # Only log when close to expiry to avoid spam
+                if remaining <= self.config.tmc_execution_window:
+                    logger.info(
+                        f"[TMC] SKIP {asset} '{q}' | "
+                        f"no Binance data (price={current_price} expected_move={raw_expected_move})"
+                    )
                 continue
 
             # Boost expected_move in final seconds (volatility explodes near expiry)
@@ -74,19 +72,26 @@ class SignalEngine:
 
             strike = profile.market.strike_price
             distance = abs(current_price - strike)
+            in_execution_window = remaining <= self.config.tmc_execution_window
 
             # KEY SIGNAL: is the price close enough that a reversal is plausible?
-            if expected_move <= 0 or distance / expected_move > K:
+            signal_passes = expected_move > 0 and distance / expected_move <= K
+
+            if not signal_passes:
                 boost_tag = f" [BOOST x{self.config.tmc_volatility_boost_factor}]" if boosted else ""
-                logger.info(
-                    f"[TMC] SKIP {asset} '{q}' | "
-                    f"dist=${distance:.2f} > {K}x expected_move=${expected_move:.2f}{boost_tag} | "
-                    f"remaining={remaining:.0f}s"
-                )
-                # Record skipped signal for shadow log
+                # Verbose log only inside execution window, sparse outside
+                if in_execution_window or remaining % 5 < 0.6:
+                    logger.info(
+                        f"[TMC] SKIP {asset} '{q}' | "
+                        f"dist=${distance:.2f} > {K}x expected_move=${expected_move:.2f}{boost_tag} | "
+                        f"remaining={remaining:.0f}s"
+                    )
+                # Always record skip for shadow log (entire entry window)
                 ratio_raw = distance / raw_expected_move if raw_expected_move > 0 else float("inf")
                 boosted_em = raw_expected_move * self.config.tmc_volatility_boost_factor
                 ratio_boosted = distance / boosted_em if boosted_em > 0 else float("inf")
+                yes_price = profile.current_yes
+                no_price = profile.current_no
                 self._record_skip(
                     cid=cid,
                     remaining=remaining,
@@ -97,18 +102,49 @@ class SignalEngine:
                     ratio_boosted=ratio_boosted,
                     current_price=current_price,
                     strike=strike,
+                    yes_price=yes_price,
+                    no_price=no_price,
+                    in_execution_window=in_execution_window,
                 )
                 continue
 
+            # Signal passes volatility check
             ratio = distance / expected_move if expected_move > 0 else 0
             boost_tag = f" [BOOST x{self.config.tmc_volatility_boost_factor}]" if boosted else ""
+
+            # Outside execution window: log as pre-signal, record for shadow
+            if not in_execution_window:
+                logger.info(
+                    f"[TMC] PRE-SIGNAL {asset} '{q}' | "
+                    f"price=${current_price:,.2f} strike=${strike:,.2f} dist=${distance:.2f} | "
+                    f"expected_move=${expected_move:.2f} (ratio={ratio:.2f} < K={K}){boost_tag} | "
+                    f"remaining={remaining:.0f}s | "
+                    f"waiting for ≤{self.config.tmc_execution_window:.0f}s exec window"
+                )
+                boosted_em = raw_expected_move * self.config.tmc_volatility_boost_factor
+                self._record_skip(
+                    cid=cid,
+                    remaining=remaining,
+                    distance=distance,
+                    raw_expected_move=raw_expected_move,
+                    boosted_expected_move=boosted_em,
+                    ratio_raw=distance / raw_expected_move if raw_expected_move > 0 else float("inf"),
+                    ratio_boosted=distance / boosted_em if boosted_em > 0 else float("inf"),
+                    current_price=current_price,
+                    strike=strike,
+                    yes_price=profile.current_yes,
+                    no_price=profile.current_no,
+                    in_execution_window=False,
+                    would_have_fired=True,
+                )
+                continue
 
             logger.info(
                 f"[TMC] CHECK {asset} '{q}' | "
                 f"price=${current_price:,.2f} strike=${strike:,.2f} dist=${distance:.2f} | "
                 f"expected_move=${expected_move:.2f} (ratio={ratio:.2f} < K={K}){boost_tag} | "
                 f"remaining={remaining:.0f}s | snaps={len(profile.snapshots)} | "
-                f"waiting for ≤{self.config.tmc_execution_window:.0f}s window"
+                f"IN EXECUTION WINDOW"
             )
 
             # Get live asks from CLOB
@@ -188,6 +224,10 @@ class SignalEngine:
         ratio_boosted: float,
         current_price: float,
         strike: float,
+        yes_price: float = 0.0,
+        no_price: float = 0.0,
+        in_execution_window: bool = True,
+        would_have_fired: bool = False,
     ) -> None:
         K = self.config.tmc_volatility_multiplier
         # Use enough decimal places for small-price assets (XRP, SOL)
@@ -195,6 +235,8 @@ class SignalEngine:
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "remaining": round(remaining, 1),
+            "in_execution_window": in_execution_window,
+            "would_have_fired": would_have_fired,
             "distance": round(distance, decimals),
             "raw_expected_move": round(raw_expected_move, decimals),
             "boosted_expected_move": round(boosted_expected_move, decimals),
@@ -203,6 +245,9 @@ class SignalEngine:
             "would_have_passed_with_boost": ratio_boosted <= K,
             "current_price": round(current_price, decimals),
             "strike": round(strike, decimals),
+            "yes_price": round(yes_price, 4),
+            "no_price": round(no_price, 4),
+            "price_side": "above" if current_price > strike else "below",
         }
         if cid not in self._skipped_signals:
             self._skipped_signals[cid] = []
