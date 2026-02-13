@@ -170,7 +170,9 @@ class TightMarketCryptoCoordinator:
             if not market or market.strike_price is not None:
                 continue
             if market.start_date and market.start_date <= now:
-                price = self._binance_feed.get_price(market.asset)
+                price = self._binance_feed.get_price_at(
+                    market.asset, market.start_date.timestamp()
+                )
                 if price is not None:
                     market.strike_price = price
                     logger.info(
