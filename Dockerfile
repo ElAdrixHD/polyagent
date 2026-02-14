@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source code
 COPY src/ src/
-COPY data/export_data.py data/export_data.py
+COPY scripts/ scripts/
 
 # Create data directories
 RUN mkdir -p data/exports
