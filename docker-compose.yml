@@ -14,7 +14,27 @@ services:
     env_file: .env
     volumes:
       - polyagent-data:/app/data
-    command: python data/export_data.py
+    command: python scripts/export_data.py
+    profiles:
+      - tools
+
+  analyze:
+    build: .
+    container_name: polyagent-analyze
+    env_file: .env
+    volumes:
+      - polyagent-data:/app/data
+    command: python scripts/analyze.py
+    profiles:
+      - tools
+
+  reversal:
+    build: .
+    container_name: polyagent-reversal
+    env_file: .env
+    volumes:
+      - polyagent-data:/app/data
+    command: python scripts/reversal_analysis.py
     profiles:
       - tools
 
