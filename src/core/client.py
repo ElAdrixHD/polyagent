@@ -21,7 +21,7 @@ class PolymarketClient:
 
     def _init_clob_client(self) -> None:
         cfg = self.config
-        sig_type = 1 if cfg.wallet_mode == "proxy" else 0
+        sig_type = 2 if cfg.wallet_mode == "proxy" else 0
         funder = cfg.proxy_wallet_address if cfg.wallet_mode == "proxy" else None
 
         self.clob = ClobClient(
