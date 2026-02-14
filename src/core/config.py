@@ -57,6 +57,10 @@ class Config:
     tmc_volatility_boost_threshold: float
     tmc_volatility_boost_factor: float
     tmc_min_minority_ask: float
+    tmc_max_entry_ask: float
+    tmc_min_seconds_remaining: float
+    tmc_min_volatility: float
+    tmc_require_strike_cross: bool
 
     @classmethod
     def from_env(cls, env_path: str | None = None) -> "Config":
@@ -127,6 +131,10 @@ class Config:
             tmc_volatility_boost_threshold=float(os.getenv("TMC_VOLATILITY_BOOST_THRESHOLD", "10.0")),
             tmc_volatility_boost_factor=float(os.getenv("TMC_VOLATILITY_BOOST_FACTOR", "3.0")),
             tmc_min_minority_ask=float(os.getenv("TMC_MIN_MINORITY_ASK", "0.05")),
+            tmc_max_entry_ask=float(os.getenv("TMC_MAX_ENTRY_ASK", "0.50")),
+            tmc_min_seconds_remaining=float(os.getenv("TMC_MIN_SECONDS_REMAINING", "7.0")),
+            tmc_min_volatility=float(os.getenv("TMC_MIN_VOLATILITY", "0.00007")),
+            tmc_require_strike_cross=_bool(os.getenv("TMC_REQUIRE_STRIKE_CROSS", "true")),
         )
 
     @property

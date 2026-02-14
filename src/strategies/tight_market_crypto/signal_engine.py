@@ -48,11 +48,27 @@ class SignalEngine:
             if remaining <= 0 or remaining > self.config.tmc_entry_window:
                 continue
 
+            # Skip if too close to expiry (trades <7s have ~0% win rate)
+            if remaining < self.config.tmc_min_seconds_remaining:
+                continue
+
             # Get live crypto price and volatility
             current_price = self.binance_feed.get_price(asset)
+            volatility = self.binance_feed.get_volatility(
+                asset, self.config.tmc_volatility_window
+            )
             raw_expected_move = self.binance_feed.get_expected_move(
                 asset, remaining, self.config.tmc_volatility_window
             )
+
+            # Skip low-volatility markets (Q1 vol has 21% WR vs 38% in Q4)
+            if volatility is not None and volatility < self.config.tmc_min_volatility:
+                if remaining <= self.config.tmc_execution_window:
+                    logger.info(
+                        f"[TMC] SKIP {asset} '{q}' | "
+                        f"low volatility: {volatility:.8f} < {self.config.tmc_min_volatility:.8f}"
+                    )
+                continue
 
             if current_price is None or raw_expected_move is None:
                 # Only log when close to expiry to avoid spam
@@ -139,13 +155,29 @@ class SignalEngine:
                 )
                 continue
 
+            # Check if price has crossed the strike during execution window
+            # This is the strongest reversal predictor: 57% reversal rate when True vs 14% when False
+            exec_start_ts = profile.market.end_date.timestamp() - self.config.tmc_execution_window
+            price_crossed = self.binance_feed.has_price_crossed(asset, strike, exec_start_ts)
+
             logger.info(
                 f"[TMC] CHECK {asset} '{q}' | "
                 f"price=${current_price:,.2f} strike=${strike:,.2f} dist=${distance:.2f} | "
                 f"expected_move=${expected_move:.2f} (ratio={ratio:.2f} < K={K}){boost_tag} | "
                 f"remaining={remaining:.0f}s | snaps={len(profile.snapshots)} | "
+                f"crossed_strike={price_crossed} | "
                 f"IN EXECUTION WINDOW"
             )
+
+            # Require price to have crossed the strike during execution window
+            # Data shows 57.1% reversal rate when True vs 14.1% when False
+            if self.config.tmc_require_strike_cross and not price_crossed:
+                logger.info(
+                    f"[TMC] SKIP {asset} '{q}' | "
+                    f"price has NOT crossed strike=${strike:,.2f} during exec window | "
+                    f"remaining={remaining:.0f}s"
+                )
+                continue
 
             # Get live asks from CLOB
             token_ids = profile.market.token_ids
@@ -173,6 +205,25 @@ class SignalEngine:
                 logger.info(
                     f"[TMC] SKIP {asset} '{q}' | "
                     f"market too one-sided: min(ask)={min_ask:.3f} < {threshold:.3f} | "
+                    f"YES={yes_ask:.3f} NO={no_ask:.3f}"
+                )
+                continue
+
+            # Determine the "cheap" side based on price vs strike
+            # If price > strike → YES is favorite → buy NO (the cheap underdog)
+            # If price < strike → NO is favorite → buy YES (the cheap underdog)
+            if current_price > strike:
+                cheap_side_ask = no_ask
+                cheap_side = "NO"
+            else:
+                cheap_side_ask = yes_ask
+                cheap_side = "YES"
+
+            max_entry = self.config.tmc_max_entry_ask
+            if max_entry > 0 and cheap_side_ask > max_entry:
+                logger.info(
+                    f"[TMC] SKIP {asset} '{q}' | "
+                    f"cheap side ({cheap_side}) ask={cheap_side_ask:.3f} > max {max_entry:.3f} | "
                     f"YES={yes_ask:.3f} NO={no_ask:.3f}"
                 )
                 continue

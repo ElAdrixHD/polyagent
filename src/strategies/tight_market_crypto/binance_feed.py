@@ -135,6 +135,31 @@ class BinancePriceFeed:
 
         return vol * price * math.sqrt(max(0, seconds_remaining))
 
+    def has_price_crossed(
+        self, asset: str, strike: float, since_ts: float
+    ) -> bool:
+        """Check if the price has been on both sides of strike since since_ts."""
+        now = time.time()
+        with self._lock:
+            hist = self._history.get(asset)
+            if not hist:
+                return False
+            points = [px for ts, px in hist if ts >= since_ts and ts <= now]
+
+        if len(points) < 2:
+            return False
+
+        seen_above = False
+        seen_below = False
+        for px in points:
+            if px > strike:
+                seen_above = True
+            elif px < strike:
+                seen_below = True
+            if seen_above and seen_below:
+                return True
+        return False
+
     def get_price_history(
         self, asset: str, start_ts: float, end_ts: float
     ) -> list[tuple[float, float]]:
