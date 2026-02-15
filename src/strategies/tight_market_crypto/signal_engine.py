@@ -61,15 +61,6 @@ class SignalEngine:
                 asset, remaining, self.config.tmc_volatility_window
             )
 
-            # Skip low-volatility markets (Q1 vol has 21% WR vs 38% in Q4)
-            if volatility is not None and volatility < self.config.tmc_min_volatility:
-                if remaining <= self.config.tmc_execution_window:
-                    logger.info(
-                        f"[TMC] SKIP {asset} '{q}' | "
-                        f"low volatility: {volatility:.8f} < {self.config.tmc_min_volatility:.8f}"
-                    )
-                continue
-
             if current_price is None or raw_expected_move is None:
                 # Only log when close to expiry to avoid spam
                 if remaining <= self.config.tmc_execution_window:
@@ -92,6 +83,18 @@ class SignalEngine:
 
             # KEY SIGNAL: is the price close enough that a reversal is plausible?
             signal_passes = expected_move > 0 and distance / expected_move <= K
+
+            # Skip low-volatility markets UNLESS distance ratio is already favorable.
+            # Low vol + far from strike = bad (21% WR). Low vol + close to strike = still tradeable.
+            low_vol = volatility is not None and volatility < self.config.tmc_min_volatility
+            if low_vol and not signal_passes:
+                if in_execution_window:
+                    logger.info(
+                        f"[TMC] SKIP {asset} '{q}' | "
+                        f"low volatility: {volatility:.8f} < {self.config.tmc_min_volatility:.8f} "
+                        f"AND price too far from strike"
+                    )
+                continue
 
             if not signal_passes:
                 boost_tag = f" [BOOST x{self.config.tmc_volatility_boost_factor}]" if boosted else ""
