@@ -228,15 +228,24 @@ class SignalEngine:
                 )
                 continue
 
-            amount_per_side = self.config.tmc_max_investment / 2
-            total_cost = self.config.tmc_max_investment
+            # Determine buy token_id for the cheap side
+            if cheap_side == "NO":
+                buy_token_id = token_ids[1]
+            else:
+                buy_token_id = token_ids[0]
+
+            amount = self.config.tmc_max_investment
+            total_cost = amount
 
             opp = TightMarketOpportunity(
                 market=profile.market,
                 profile=profile,
                 yes_ask=yes_ask,
                 no_ask=no_ask,
-                amount_per_side=amount_per_side,
+                buy_side=cheap_side,
+                buy_token_id=buy_token_id,
+                buy_ask=cheap_side_ask,
+                amount=amount,
                 total_cost=total_cost,
                 strike_price=strike,
                 current_crypto_price=current_price,
@@ -248,11 +257,11 @@ class SignalEngine:
 
             logger.info(
                 f"[TMC] >>> SIGNAL FIRED: {asset} '{q}' | "
+                f"BUY {cheap_side}@${cheap_side_ask:.3f} ${amount:.2f} | "
                 f"YES=${yes_ask:.3f} NO=${no_ask:.3f} | "
                 f"price=${current_price:,.2f} strike=${strike:,.2f} "
                 f"dist=${distance:.2f} expected=${expected_move:.2f}{boost_tag} | "
-                f"remaining={remaining:.0f}s | "
-                f"${amount_per_side:.2f}/side = ${total_cost:.2f} total"
+                f"remaining={remaining:.0f}s"
             )
 
         return opportunities

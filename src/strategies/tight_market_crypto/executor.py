@@ -54,9 +54,8 @@ class TightMarketCryptoExecutor:
         if self.config.dry_run:
             logger.info(
                 f"[TMC] [DRY RUN] Would buy "
-                f"YES@{opp.yes_ask:.4f} ${opp.amount_per_side:.2f} + "
-                f"NO@{opp.no_ask:.4f} ${opp.amount_per_side:.2f} = "
-                f"${opp.total_cost:.2f} on '{opp.market.question[:50]}' | "
+                f"{opp.buy_side}@{opp.buy_ask:.4f} ${opp.amount:.2f} "
+                f"on '{opp.market.question[:50]}' | "
                 f"strike=${opp.strike_price:,.2f} dist=${opp.distance:.2f} "
                 f"expected_move=${opp.expected_move:.2f}"
             )
@@ -76,40 +75,28 @@ class TightMarketCryptoExecutor:
         q = opp.market.question[:50]
         logger.info(
             f"[TMC] EXECUTING {asset} '{q}' | "
-            f"${opp.amount_per_side:.2f}/side | daily_loss=${self._daily_loss:.2f}"
+            f"BUY {opp.buy_side}@${opp.buy_ask:.4f} ${opp.amount:.2f} | "
+            f"daily_loss=${self._daily_loss:.2f}"
         )
         try:
-            # Buy YES — market order, amount in USD
-            logger.info(f"[TMC] Creating YES market order: token={opp.market.token_ids[0][:12]}... amount=${opp.amount_per_side:.2f}")
-            yes_signed = self.client.clob.create_market_order(
+            # Buy underdog — single market order
+            logger.info(
+                f"[TMC] Creating {opp.buy_side} market order: "
+                f"token={opp.buy_token_id[:12]}... amount=${opp.amount:.2f}"
+            )
+            signed = self.client.clob.create_market_order(
                 MarketOrderArgs(
-                    token_id=opp.market.token_ids[0],
-                    amount=opp.amount_per_side,
+                    token_id=opp.buy_token_id,
+                    amount=opp.amount,
                     side="BUY",
                     order_type=OrderType.FOK,
                 )
             )
-            logger.info(f"[TMC] YES order signed, posting...")
-            yes_resp = self.client.clob.post_order(yes_signed, OrderType.FOK)
-            yes_id = yes_resp.get("orderID", "")
-            order_ids.append(yes_id)
-            logger.info(f"[TMC] YES order posted: {yes_id} | response: {yes_resp}")
-
-            # Buy NO — market order, amount in USD
-            logger.info(f"[TMC] Creating NO market order: token={opp.market.token_ids[1][:12]}... amount=${opp.amount_per_side:.2f}")
-            no_signed = self.client.clob.create_market_order(
-                MarketOrderArgs(
-                    token_id=opp.market.token_ids[1],
-                    amount=opp.amount_per_side,
-                    side="BUY",
-                    order_type=OrderType.FOK,
-                )
-            )
-            logger.info(f"[TMC] NO order signed, posting...")
-            no_resp = self.client.clob.post_order(no_signed, OrderType.FOK)
-            no_id = no_resp.get("orderID", "")
-            order_ids.append(no_id)
-            logger.info(f"[TMC] NO order posted: {no_id} | response: {no_resp}")
+            logger.info(f"[TMC] {opp.buy_side} order signed, posting...")
+            resp = self.client.clob.post_order(signed, OrderType.FOK)
+            order_id = resp.get("orderID", "")
+            order_ids.append(order_id)
+            logger.info(f"[TMC] {opp.buy_side} order posted: {order_id} | response: {resp}")
 
             self._daily_loss += opp.total_cost
 
@@ -158,20 +145,17 @@ class TightMarketCryptoExecutor:
             if entry.get("outcome") is not None:
                 continue  # Already filled
 
-            yes_ask = entry.get("yes_ask", 0)
-            no_ask = entry.get("no_ask", 0)
-            amount_per_side = entry.get("amount_per_side", 0)
-            total_cost = entry.get("total_cost", 0)
+            buy_side = entry.get("buy_side", "")
+            buy_ask = entry.get("buy_ask", 0)
+            amount = entry.get("amount", 0)
 
-            if outcome == "YES" and yes_ask > 0:
-                payout = amount_per_side / yes_ask
-            elif outcome == "NO" and no_ask > 0:
-                payout = amount_per_side / no_ask
+            if buy_side == outcome and buy_ask > 0:
+                payout = amount / buy_ask
             else:
-                continue
+                payout = 0
 
-            net_return = payout - total_cost
-            return_pct = (net_return / total_cost * 100) if total_cost > 0 else 0.0
+            net_return = payout - amount
+            return_pct = (net_return / amount * 100) if amount > 0 else 0.0
 
             entry["outcome"] = outcome
             entry["payout"] = round(payout, 4)
@@ -225,7 +209,9 @@ class TightMarketCryptoExecutor:
             "asset": result.opportunity.market.asset,
             "yes_ask": result.opportunity.yes_ask,
             "no_ask": result.opportunity.no_ask,
-            "amount_per_side": result.opportunity.amount_per_side,
+            "buy_side": result.opportunity.buy_side,
+            "buy_ask": result.opportunity.buy_ask,
+            "amount": result.opportunity.amount,
             "total_cost": result.opportunity.total_cost,
             "strike_price": result.opportunity.strike_price,
             "current_crypto_price": result.opportunity.current_crypto_price,

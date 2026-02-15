@@ -24,7 +24,7 @@ SYMBOL_TO_ASSET = {
     "XRPUSDT": "XRP",
 }
 
-MAX_HISTORY = 900  # ~15 minutes at 1 update/sec
+MAX_HISTORY = 1800  # ~30 minutes at 1 update/sec
 
 
 class BinancePriceFeed:

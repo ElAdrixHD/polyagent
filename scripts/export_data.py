@@ -35,7 +35,8 @@ def load_json(filename):
 
 TRADE_COLS = [
     "timestamp", "asset", "question", "outcome",
-    "yes_ask", "no_ask", "total_cost", "payout", "net_return", "return_pct",
+    "buy_side", "buy_ask", "yes_ask", "no_ask",
+    "amount", "total_cost", "payout", "net_return", "return_pct",
     "strike_price", "current_crypto_price", "final_crypto_price",
     "distance", "expected_move", "tight_ratio", "avg_spread",
     "seconds_remaining", "dry_run", "condition_id",

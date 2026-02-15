@@ -43,8 +43,11 @@ class TightMarketOpportunity:
     profile: TightnessProfile
     yes_ask: float
     no_ask: float
-    amount_per_side: float  # USD per side
-    total_cost: float  # amount_per_side * 2
+    buy_side: str  # "YES" or "NO" (the underdog)
+    buy_token_id: str
+    buy_ask: float
+    amount: float  # USD total bet on underdog
+    total_cost: float  # = amount (single side)
     strike_price: float  # captured at market open
     current_crypto_price: float  # Binance price at signal time
     distance: float  # abs(current - strike) in $

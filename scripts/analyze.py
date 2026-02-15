@@ -40,9 +40,7 @@ if HAS_TRADES:
     trades["min_ask"] = trades[["yes_ask", "no_ask"]].min(axis=1)
     trades["max_ask"] = trades[["yes_ask", "no_ask"]].max(axis=1)
     trades["ask_imbalance"] = trades["max_ask"] - trades["min_ask"]
-    trades["bought_ask"] = trades.apply(
-        lambda r: r["yes_ask"] if r["outcome_dir"] == "YES" else r["no_ask"], axis=1
-    )
+    trades["bought_ask"] = trades["buy_ask"]
     win_df = trades[trades["win"]].copy()
     loss_df = trades[~trades["win"]].copy()
 
