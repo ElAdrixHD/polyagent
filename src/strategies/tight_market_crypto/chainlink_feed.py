@@ -10,7 +10,8 @@ import websocket
 logger = logging.getLogger("polyagent")
 
 CHAINLINK_WS_URL = "wss://ws-live-data.polymarket.com"
-TOPIC = "crypto_prices_chainlink"
+SUBSCRIBE_TOPIC = "crypto_prices_chainlink"
+RESPONSE_TOPIC = "crypto_prices"
 
 # Map canonical asset name to Chainlink symbol
 ASSET_TO_SYMBOL = {
@@ -22,6 +23,7 @@ ASSET_TO_SYMBOL = {
 SYMBOL_TO_ASSET = {v: k for k, v in ASSET_TO_SYMBOL.items()}
 
 MAX_HISTORY = 1800  # ~30 minutes at 1 update/sec
+POLL_INTERVAL = 0.5  # Re-subscribe every N seconds to get fresh data
 
 
 class ChainlinkPriceFeed:
@@ -29,6 +31,10 @@ class ChainlinkPriceFeed:
 
     Uses the exact same Chainlink data streams that Polymarket uses for
     market resolution, eliminating price source mismatch.
+
+    The RTDS WS sends a batch of ~59 data points on each subscribe call
+    but does not stream continuously. We re-subscribe periodically to
+    maintain a live price feed.
     """
 
     def __init__(self) -> None:
@@ -36,24 +42,35 @@ class ChainlinkPriceFeed:
         self._history: dict[str, deque[tuple[float, float]]] = {
             asset: deque(maxlen=MAX_HISTORY) for asset in ASSET_TO_SYMBOL
         }
+        self._seen_ts: dict[str, set[int]] = {
+            asset: set() for asset in ASSET_TO_SYMBOL
+        }
         self._lock = threading.Lock()
         self._running = False
-        self._thread: threading.Thread | None = None
+        self._ws_thread: threading.Thread | None = None
+        self._poll_thread: threading.Thread | None = None
+        self._ws: websocket.WebSocketApp | None = None
+        self._ws_ready = threading.Event()
         self._last_log = 0.0
 
     def start(self) -> None:
         if self._running:
             return
         self._running = True
-        self._thread = threading.Thread(
+        self._ws_thread = threading.Thread(
             target=self._ws_loop, name="Chainlink-WS", daemon=True
         )
-        self._thread.start()
+        self._ws_thread.start()
+        self._poll_thread = threading.Thread(
+            target=self._poll_loop, name="Chainlink-Poll", daemon=True
+        )
+        self._poll_thread.start()
         logger.info("[TMC] Chainlink price feed starting...")
 
     def stop(self) -> None:
         self._running = False
-        if hasattr(self, "_ws") and self._ws:
+        self._ws_ready.set()  # unblock poll loop
+        if self._ws:
             try:
                 self._ws.close()
             except Exception:
@@ -172,12 +189,27 @@ class ChainlinkPriceFeed:
 
     def _ws_loop(self) -> None:
         while self._running:
+            self._ws_ready.clear()
             try:
                 self._connect()
             except Exception as e:
                 logger.error(f"[TMC] Chainlink WS error: {e}")
+            self._ws_ready.clear()
             if self._running:
                 time.sleep(2)
+
+    def _poll_loop(self) -> None:
+        """Periodically re-subscribe to get fresh Chainlink prices."""
+        while self._running:
+            self._ws_ready.wait(timeout=10)
+            if not self._running:
+                break
+            time.sleep(POLL_INTERVAL)
+            if self._running and self._ws:
+                try:
+                    self._send_subscriptions(self._ws)
+                except Exception:
+                    pass
 
     def _connect(self) -> None:
         self._ws = websocket.WebSocketApp(
@@ -193,26 +225,32 @@ class ChainlinkPriceFeed:
 
     def _on_open(self, ws) -> None:
         logger.info("[TMC] Chainlink WS connected, subscribing...")
-        for asset, symbol in ASSET_TO_SYMBOL.items():
+        self._send_subscriptions(ws)
+        self._ws_ready.set()
+
+    def _send_subscriptions(self, ws) -> None:
+        for symbol in ASSET_TO_SYMBOL.values():
             sub_msg = json.dumps({
                 "action": "subscribe",
                 "subscriptions": [{
-                    "topic": TOPIC,
+                    "topic": SUBSCRIBE_TOPIC,
                     "type": "*",
                     "filters": json.dumps({"symbol": symbol}),
                 }],
             })
             ws.send(sub_msg)
-            logger.debug(f"[TMC] Subscribed to Chainlink {symbol}")
 
     def _on_message(self, message: str) -> None:
+        if not message or not message.strip():
+            return
+
         try:
             data = json.loads(message)
         except json.JSONDecodeError:
             return
 
-        # Only handle updates for our topic
-        if data.get("topic") != TOPIC:
+        # Response topic is "crypto_prices" (not the subscribe topic)
+        if data.get("topic") != RESPONSE_TOPIC:
             return
 
         payload = data.get("payload")
@@ -224,24 +262,39 @@ class ChainlinkPriceFeed:
         if not asset:
             return
 
-        try:
-            price = float(payload.get("value", 0))
-        except (ValueError, TypeError):
+        # Payload contains a "data" array of {timestamp, value} objects
+        points = payload.get("data")
+        if not isinstance(points, list) or not points:
             return
 
-        if price <= 0:
-            return
-
-        # Use server timestamp (ms) if available, else local time
-        ts = payload.get("timestamp")
-        if ts is not None:
-            now = ts / 1000.0  # convert ms to seconds
-        else:
-            now = time.time()
-
+        new_count = 0
         with self._lock:
-            self._prices[asset] = price
-            self._history[asset].append((now, price))
+            seen = self._seen_ts[asset]
+            for point in points:
+                try:
+                    ts_ms = int(point["timestamp"])
+                    price = float(point["value"])
+                except (KeyError, ValueError, TypeError):
+                    continue
+
+                if price <= 0:
+                    continue
+
+                # Deduplicate by timestamp (ms precision)
+                if ts_ms in seen:
+                    continue
+                seen.add(ts_ms)
+
+                ts_sec = ts_ms / 1000.0
+                self._prices[asset] = price
+                self._history[asset].append((ts_sec, price))
+                new_count += 1
+
+            # Prune seen_ts to avoid memory growth (keep last 5 min)
+            if len(seen) > 600:
+                cutoff_ms = int((time.time() - 300) * 1000)
+                to_remove = {t for t in seen if t < cutoff_ms}
+                seen -= to_remove
 
         # Log prices every 30 seconds
         wall_now = time.time()
@@ -253,5 +306,8 @@ class ChainlinkPriceFeed:
                     p = self._prices.get(a)
                     if p is not None:
                         parts.append(f"{a}=${p:,.2f}")
+                    hist = self._history.get(a)
+                    hist_len = len(hist) if hist else 0
+                    parts.append(f"({hist_len}pts)")
             if parts:
                 logger.info(f"[TMC] Chainlink: {' '.join(parts)}")
