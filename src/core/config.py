@@ -55,11 +55,13 @@ class Config:
     tmc_volatility_multiplier: float
     tmc_volatility_window: int
     tmc_volatility_boost_factor: float
-    tmc_min_minority_ask: float
     tmc_max_entry_ask: float
     tmc_min_seconds_remaining: float
     tmc_min_volatility: float
     tmc_max_distance_ratio: float
+    tmc_odds_bypass_max_ask: float
+    tmc_block_confirming_momentum: bool
+    tmc_momentum_threshold: float
 
     @classmethod
     def from_env(cls, env_path: str | None = None) -> "Config":
@@ -128,11 +130,13 @@ class Config:
             tmc_volatility_multiplier=float(os.getenv("TMC_VOLATILITY_MULTIPLIER", "2.0")),
             tmc_volatility_window=int(os.getenv("TMC_VOLATILITY_WINDOW", "300")),
             tmc_volatility_boost_factor=float(os.getenv("TMC_VOLATILITY_BOOST_FACTOR", "2.0")),
-            tmc_min_minority_ask=float(os.getenv("TMC_MIN_MINORITY_ASK", "0.05")),
             tmc_max_entry_ask=float(os.getenv("TMC_MAX_ENTRY_ASK", "0.50")),
             tmc_min_seconds_remaining=float(os.getenv("TMC_MIN_SECONDS_REMAINING", "7.0")),
             tmc_min_volatility=float(os.getenv("TMC_MIN_VOLATILITY", "0.00007")),
             tmc_max_distance_ratio=float(os.getenv("TMC_MAX_DISTANCE_RATIO", "8.0")),
+            tmc_odds_bypass_max_ask=float(os.getenv("TMC_ODDS_BYPASS_MAX_ASK", "0.15")),
+            tmc_block_confirming_momentum=_bool(os.getenv("TMC_BLOCK_CONFIRMING_MOMENTUM", "true")),
+            tmc_momentum_threshold=float(os.getenv("TMC_MOMENTUM_THRESHOLD", "0.0")),
         )
 
     @property

@@ -90,6 +90,7 @@ SIGNAL_COLS = [
     "distance", "raw_expected_move", "boosted_expected_move",
     "ratio_raw", "ratio_boosted",
     "current_price", "strike", "yes_price", "no_price", "price_side",
+    "skip_reason",
 ]
 
 def export_shadow_signals(shadow):
