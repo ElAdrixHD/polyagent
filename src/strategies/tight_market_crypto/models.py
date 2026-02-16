@@ -12,7 +12,7 @@ class CryptoMarket:
     volume: float = 0.0
     liquidity: float = 0.0
     start_date: datetime | None = None  # When the 15-min window opens
-    strike_price: float | None = None  # Binance price captured at start_date
+    strike_price: float | None = None  # Chainlink price captured at start_date
 
 
 @dataclass
@@ -49,7 +49,7 @@ class TightMarketOpportunity:
     amount: float  # USD total bet on underdog
     total_cost: float  # = amount (single side)
     strike_price: float  # captured at market open
-    current_crypto_price: float  # Binance price at signal time
+    current_crypto_price: float  # Chainlink price at signal time
     distance: float  # abs(current - strike) in $
     expected_move: float  # volatility-based expected move in $
     timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())

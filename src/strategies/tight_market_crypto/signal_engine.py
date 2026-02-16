@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from src.core.client import PolymarketClient
 from src.core.config import Config
 
-from .binance_feed import BinancePriceFeed
+from .chainlink_feed import ChainlinkPriceFeed
 from .models import TightMarketOpportunity
 from .tightness_tracker import TightnessTracker
 
@@ -17,12 +17,12 @@ class SignalEngine:
         config: Config,
         tracker: TightnessTracker,
         client: PolymarketClient,
-        binance_feed: BinancePriceFeed,
+        price_feed: ChainlinkPriceFeed,
     ):
         self.config = config
         self.tracker = tracker
         self.client = client
-        self.binance_feed = binance_feed
+        self.price_feed = price_feed
         self._fired: set[str] = set()  # condition_ids already fired
         self._skipped_signals: dict[str, list[dict]] = {}  # cid -> list of skip entries
 
@@ -53,11 +53,11 @@ class SignalEngine:
                 continue
 
             # Get live crypto price and volatility
-            current_price = self.binance_feed.get_price(asset)
-            volatility = self.binance_feed.get_volatility(
+            current_price = self.price_feed.get_price(asset)
+            volatility = self.price_feed.get_volatility(
                 asset, self.config.tmc_volatility_window
             )
-            raw_expected_move = self.binance_feed.get_expected_move(
+            raw_expected_move = self.price_feed.get_expected_move(
                 asset, remaining, self.config.tmc_volatility_window
             )
 
@@ -66,7 +66,7 @@ class SignalEngine:
                 if remaining <= self.config.tmc_execution_window:
                     logger.info(
                         f"[TMC] SKIP {asset} '{q}' | "
-                        f"no Binance data (price={current_price} expected_move={raw_expected_move})"
+                        f"no Chainlink data (price={current_price} expected_move={raw_expected_move})"
                     )
                 continue
 
@@ -181,7 +181,7 @@ class SignalEngine:
 
             # Log price_crossed for shadow analysis (informational, no longer a gate)
             exec_start_ts = profile.market.end_date.timestamp() - self.config.tmc_execution_window
-            price_crossed = self.binance_feed.has_price_crossed(asset, strike, exec_start_ts)
+            price_crossed = self.price_feed.has_price_crossed(asset, strike, exec_start_ts)
 
             logger.info(
                 f"[TMC] CHECK {asset} '{q}' | "

@@ -129,7 +129,7 @@ class TightMarketCryptoExecutor:
     ) -> None:
         """Enrich log entries for condition_id with resolution outcome and return metrics.
 
-        Uses the Binance final_price vs strike to determine win/loss.
+        Uses the Chainlink final_price vs strike to determine win/loss.
         """
         if not TRADES_FILE.exists():
             return

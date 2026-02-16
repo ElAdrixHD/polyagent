@@ -8,7 +8,7 @@ from pathlib import Path
 from src.core.client import PolymarketClient
 from src.core.config import Config
 
-from .binance_feed import BinancePriceFeed
+from .chainlink_feed import ChainlinkPriceFeed
 from .executor import TightMarketCryptoExecutor
 from .market_finder import CryptoMarketFinder
 from .signal_engine import SignalEngine
@@ -35,9 +35,9 @@ class TightMarketCryptoCoordinator:
         self._client = PolymarketClient(config)
         self._finder = CryptoMarketFinder(config)
         self._tracker = TightnessTracker(config)
-        self._binance_feed = BinancePriceFeed()
+        self._chainlink_feed = ChainlinkPriceFeed()
         self._signal_engine = SignalEngine(
-            config, self._tracker, self._client, self._binance_feed
+            config, self._tracker, self._client, self._chainlink_feed
         )
         self._executor = TightMarketCryptoExecutor(self._client, config)
 
@@ -49,7 +49,7 @@ class TightMarketCryptoCoordinator:
         logger.info(f"[TMC] Starting — tracking: {assets}")
 
         self._tracker.start()
-        self._binance_feed.start()
+        self._chainlink_feed.start()
 
         self._thread = threading.Thread(
             target=self._main_loop, name="TMC-Main", daemon=True
@@ -60,7 +60,7 @@ class TightMarketCryptoCoordinator:
         logger.info("[TMC] Shutting down...")
         self._running = False
         self._tracker.stop()
-        self._binance_feed.stop()
+        self._chainlink_feed.stop()
 
     def join(self, timeout: float = 5.0) -> None:
         if self._thread:
@@ -107,7 +107,7 @@ class TightMarketCryptoCoordinator:
     def _discover_and_clean(self) -> None:
         now = datetime.now(timezone.utc)
 
-        # Clean expired markets and record outcomes using Binance price
+        # Clean expired markets and record outcomes using Chainlink price
         expired_count = 0
         traded_cids = self._executor.get_traded_condition_ids()
         for cid in list(self._tracker.tracked_condition_ids()):
@@ -123,12 +123,12 @@ class TightMarketCryptoCoordinator:
                     f"[TMC] Expired: {market.asset} '{market.question[:50]}'"
                 )
 
-                # Determine outcome from Binance price at window close vs strike
+                # Determine outcome from Chainlink price at window close vs strike
                 final_price = None
                 outcome = None
                 if market.strike_price is not None:
                     end_ts = market.end_date.timestamp()
-                    final_price = self._binance_feed.get_price_at(
+                    final_price = self._chainlink_feed.get_price_at(
                         market.asset, end_ts
                     )
                     if final_price is not None:
@@ -137,7 +137,7 @@ class TightMarketCryptoCoordinator:
                             cid, outcome, final_price
                         )
                         logger.info(
-                            f"[TMC] Resolved via Binance: {market.asset} "
+                            f"[TMC] Resolved via Chainlink: {market.asset} "
                             f"strike={market.strike_price:,.2f} "
                             f"final={final_price:,.2f} → {outcome}"
                         )
@@ -176,7 +176,7 @@ class TightMarketCryptoCoordinator:
             if not market or market.strike_price is not None:
                 continue
             if market.start_date and market.start_date <= now:
-                price = self._binance_feed.get_price_at(
+                price = self._chainlink_feed.get_price_at(
                     market.asset, market.start_date.timestamp()
                 )
                 if price is not None:
@@ -228,10 +228,10 @@ class TightMarketCryptoCoordinator:
         max_distance = None
         price_momentum = None  # $/sec in last 3 seconds
 
-        raw_exec_history = self._binance_feed.get_price_history(
+        raw_exec_history = self._chainlink_feed.get_price_history(
             market.asset, exec_start_ts, end_ts
         )
-        raw_entry_history = self._binance_feed.get_price_history(
+        raw_entry_history = self._chainlink_feed.get_price_history(
             market.asset, entry_start_ts, end_ts
         )
 
@@ -313,10 +313,10 @@ class TightMarketCryptoCoordinator:
                         })
 
         # Volatility metrics at expiry
-        volatility = self._binance_feed.get_volatility(
+        volatility = self._chainlink_feed.get_volatility(
             market.asset, self.config.tmc_volatility_window
         )
-        expected_move_5s = self._binance_feed.get_expected_move(
+        expected_move_5s = self._chainlink_feed.get_expected_move(
             market.asset, exec_window, self.config.tmc_volatility_window
         )
 
