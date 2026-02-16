@@ -217,8 +217,8 @@ All parameters are set via environment variables (`.env`) and loaded into `Confi
 | `TMC_EXECUTION_WINDOW` | 60.0 | Seconds before expiry where trades can actually execute |
 | `TMC_VOLATILITY_MULTIPLIER` | 1.0 | K threshold: lower = stricter signal filter |
 | `TMC_VOLATILITY_WINDOW` | 300.0 | Seconds of Binance data for volatility calc |
-| `TMC_VOLATILITY_BOOST_THRESHOLD` | 15.0 | Remaining seconds to activate volatility boost |
-| `TMC_VOLATILITY_BOOST_FACTOR` | 2.0 | Multiplier for expected_move near expiry |
+| `TMC_VOLATILITY_BOOST_FACTOR` | 2.0 | Multiplier for expected_move inside execution window |
+| `TMC_MAX_DISTANCE_RATIO` | 8.0 | Max raw distance/expected_move ratio to enter trade |
 | `TMC_MIN_MINORITY_ASK` | 0.01 | Minimum ask on weaker side (skip if below) |
 | `TMC_MAX_INVESTMENT` | 10.0 | Total USD per trade (split equally: $5 YES + $5 NO) |
 | `TMC_MAX_DAILY_LOSS` | 50.0 | Kill switch: stop trading if daily loss exceeds this |

@@ -96,7 +96,13 @@ class TightMarketCryptoCoordinator:
             except Exception as e:
                 logger.error(f"[TMC] Main loop error: {e}")
 
-            time.sleep(0.5)
+            # Faster polling when markets are close to expiry
+            profiles = self._tracker.get_all_profiles()
+            min_remaining = min((p.seconds_remaining for p in profiles), default=999)
+            if min_remaining <= self.config.tmc_execution_window + 5:
+                time.sleep(0.15)
+            else:
+                time.sleep(0.5)
 
     def _discover_and_clean(self) -> None:
         now = datetime.now(timezone.utc)

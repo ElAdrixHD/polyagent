@@ -70,16 +70,15 @@ class SignalEngine:
                     )
                 continue
 
-            # Boost expected_move in final seconds (volatility explodes near expiry)
-            boosted = remaining <= self.config.tmc_volatility_boost_threshold
-            if boosted:
-                expected_move = raw_expected_move * self.config.tmc_volatility_boost_factor
-            else:
-                expected_move = raw_expected_move
-
             strike = profile.market.strike_price
             distance = abs(current_price - strike)
             in_execution_window = remaining <= self.config.tmc_execution_window
+
+            # Boost expected_move inside execution window (volatility spikes near expiry)
+            if in_execution_window:
+                expected_move = raw_expected_move * self.config.tmc_volatility_boost_factor
+            else:
+                expected_move = raw_expected_move
 
             # KEY SIGNAL: is the price close enough that a reversal is plausible?
             signal_passes = expected_move > 0 and distance / expected_move <= K
@@ -97,7 +96,7 @@ class SignalEngine:
                 continue
 
             if not signal_passes:
-                boost_tag = f" [BOOST x{self.config.tmc_volatility_boost_factor}]" if boosted else ""
+                boost_tag = f" [BOOST x{self.config.tmc_volatility_boost_factor}]" if in_execution_window else ""
                 # Verbose log only inside execution window, sparse outside
                 if in_execution_window or remaining % 5 < 0.6:
                     logger.info(
@@ -129,7 +128,7 @@ class SignalEngine:
 
             # Signal passes volatility check
             ratio = distance / expected_move if expected_move > 0 else 0
-            boost_tag = f" [BOOST x{self.config.tmc_volatility_boost_factor}]" if boosted else ""
+            boost_tag = f" [BOOST x{self.config.tmc_volatility_boost_factor}]" if in_execution_window else ""
 
             # Outside execution window: log as pre-signal, record for shadow
             if not in_execution_window:
@@ -158,8 +157,29 @@ class SignalEngine:
                 )
                 continue
 
-            # Check if price has crossed the strike during execution window
-            # This is the strongest reversal predictor: 57% reversal rate when True vs 14% when False
+            # --- EXECUTION WINDOW: apply real gates ---
+
+            # Gate 1: raw distance ratio (unboosted) — best predictor of EV
+            raw_ratio = distance / raw_expected_move if raw_expected_move > 0 else float("inf")
+            if raw_ratio > self.config.tmc_max_distance_ratio:
+                self._record_skip(
+                    cid=cid, remaining=remaining, distance=distance,
+                    raw_expected_move=raw_expected_move,
+                    boosted_expected_move=raw_expected_move * self.config.tmc_volatility_boost_factor,
+                    ratio_raw=raw_ratio,
+                    ratio_boosted=distance / (raw_expected_move * self.config.tmc_volatility_boost_factor) if raw_expected_move > 0 else float("inf"),
+                    current_price=current_price, strike=strike,
+                    yes_price=profile.current_yes, no_price=profile.current_no,
+                    in_execution_window=True, skip_reason="distance_ratio_too_high",
+                )
+                logger.info(
+                    f"[TMC] SKIP {asset} '{q}' | "
+                    f"raw distance ratio {raw_ratio:.1f} > max {self.config.tmc_max_distance_ratio} | "
+                    f"remaining={remaining:.0f}s"
+                )
+                continue
+
+            # Log price_crossed for shadow analysis (informational, no longer a gate)
             exec_start_ts = profile.market.end_date.timestamp() - self.config.tmc_execution_window
             price_crossed = self.binance_feed.has_price_crossed(asset, strike, exec_start_ts)
 
@@ -167,27 +187,28 @@ class SignalEngine:
                 f"[TMC] CHECK {asset} '{q}' | "
                 f"price=${current_price:,.2f} strike=${strike:,.2f} dist=${distance:.2f} | "
                 f"expected_move=${expected_move:.2f} (ratio={ratio:.2f} < K={K}){boost_tag} | "
+                f"raw_ratio={raw_ratio:.1f} | "
                 f"remaining={remaining:.0f}s | snaps={len(profile.snapshots)} | "
                 f"crossed_strike={price_crossed} | "
                 f"IN EXECUTION WINDOW"
             )
 
-            # Require price to have crossed the strike during execution window
-            # Data shows 57.1% reversal rate when True vs 14.1% when False
-            if self.config.tmc_require_strike_cross and not price_crossed:
-                logger.info(
-                    f"[TMC] SKIP {asset} '{q}' | "
-                    f"price has NOT crossed strike=${strike:,.2f} during exec window | "
-                    f"remaining={remaining:.0f}s"
-                )
-                continue
-
-            # Get live asks from CLOB
+            # Gate 2: live CLOB asks
             token_ids = profile.market.token_ids
             yes_ask = self.client.get_best_ask(token_ids[0])
             no_ask = self.client.get_best_ask(token_ids[1])
 
             if yes_ask is None or no_ask is None:
+                self._record_skip(
+                    cid=cid, remaining=remaining, distance=distance,
+                    raw_expected_move=raw_expected_move,
+                    boosted_expected_move=raw_expected_move * self.config.tmc_volatility_boost_factor,
+                    ratio_raw=raw_ratio,
+                    ratio_boosted=distance / (raw_expected_move * self.config.tmc_volatility_boost_factor) if raw_expected_move > 0 else float("inf"),
+                    current_price=current_price, strike=strike,
+                    yes_price=profile.current_yes, no_price=profile.current_no,
+                    in_execution_window=True, skip_reason="no_live_asks",
+                )
                 logger.info(
                     f"[TMC] SKIP {asset} '{q}' | "
                     f"no live asks (YES={yes_ask} NO={no_ask})"
@@ -195,16 +216,36 @@ class SignalEngine:
                 continue
 
             if yes_ask <= 0 or no_ask <= 0:
+                self._record_skip(
+                    cid=cid, remaining=remaining, distance=distance,
+                    raw_expected_move=raw_expected_move,
+                    boosted_expected_move=raw_expected_move * self.config.tmc_volatility_boost_factor,
+                    ratio_raw=raw_ratio,
+                    ratio_boosted=distance / (raw_expected_move * self.config.tmc_volatility_boost_factor) if raw_expected_move > 0 else float("inf"),
+                    current_price=current_price, strike=strike,
+                    yes_price=profile.current_yes, no_price=profile.current_no,
+                    in_execution_window=True, skip_reason="invalid_asks",
+                )
                 logger.info(
                     f"[TMC] SKIP {asset} '{q}' | "
                     f"invalid asks (YES={yes_ask} NO={no_ask})"
                 )
                 continue
 
-            # Skip if market already too one-sided (minority ask too cheap)
+            # Gate 3: market too one-sided
             min_ask = min(yes_ask, no_ask)
             threshold = self.config.tmc_min_minority_ask
             if threshold > 0 and min_ask < threshold:
+                self._record_skip(
+                    cid=cid, remaining=remaining, distance=distance,
+                    raw_expected_move=raw_expected_move,
+                    boosted_expected_move=raw_expected_move * self.config.tmc_volatility_boost_factor,
+                    ratio_raw=raw_ratio,
+                    ratio_boosted=distance / (raw_expected_move * self.config.tmc_volatility_boost_factor) if raw_expected_move > 0 else float("inf"),
+                    current_price=current_price, strike=strike,
+                    yes_price=yes_ask, no_price=no_ask,
+                    in_execution_window=True, skip_reason="market_too_one_sided",
+                )
                 logger.info(
                     f"[TMC] SKIP {asset} '{q}' | "
                     f"market too one-sided: min(ask)={min_ask:.3f} < {threshold:.3f} | "
@@ -222,8 +263,19 @@ class SignalEngine:
                 cheap_side_ask = yes_ask
                 cheap_side = "YES"
 
+            # Gate 4: cheap side too expensive
             max_entry = self.config.tmc_max_entry_ask
             if max_entry > 0 and cheap_side_ask > max_entry:
+                self._record_skip(
+                    cid=cid, remaining=remaining, distance=distance,
+                    raw_expected_move=raw_expected_move,
+                    boosted_expected_move=raw_expected_move * self.config.tmc_volatility_boost_factor,
+                    ratio_raw=raw_ratio,
+                    ratio_boosted=distance / (raw_expected_move * self.config.tmc_volatility_boost_factor) if raw_expected_move > 0 else float("inf"),
+                    current_price=current_price, strike=strike,
+                    yes_price=yes_ask, no_price=no_ask,
+                    in_execution_window=True, skip_reason="cheap_side_too_expensive",
+                )
                 logger.info(
                     f"[TMC] SKIP {asset} '{q}' | "
                     f"cheap side ({cheap_side}) ask={cheap_side_ask:.3f} > max {max_entry:.3f} | "
@@ -291,6 +343,7 @@ class SignalEngine:
         no_price: float = 0.0,
         in_execution_window: bool = True,
         would_have_fired: bool = False,
+        skip_reason: str = "",
     ) -> None:
         K = self.config.tmc_volatility_multiplier
         # Use enough decimal places for small-price assets (XRP, SOL)
@@ -311,6 +364,7 @@ class SignalEngine:
             "yes_price": round(yes_price, 4),
             "no_price": round(no_price, 4),
             "price_side": "above" if current_price > strike else "below",
+            "skip_reason": skip_reason,
         }
         if cid not in self._skipped_signals:
             self._skipped_signals[cid] = []
