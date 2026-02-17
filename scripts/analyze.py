@@ -134,16 +134,19 @@ if HAS_TRADES:
     print(f"  Wins   avg: {win_df['tight_ratio'].mean():.4f}   med: {win_df['tight_ratio'].median():.4f}")
     print(f"  Losses avg: {loss_df['tight_ratio'].mean():.4f}   med: {loss_df['tight_ratio'].median():.4f}")
 
-    trades["tr_q"] = pd.qcut(
-        trades["tight_ratio"], q=4, labels=["Q1(low)", "Q2", "Q3", "Q4(high)"], duplicates="drop"
-    )
-    tr_q = trades.groupby("tr_q", observed=True).agg(
-        count=("win", "count"),
-        win_rate=("win", lambda x: x.mean() * 100),
-        avg_return=("net_return", "mean"),
-    )
-    print("\n  By tight_ratio quartile:")
-    print(tr_q.to_string())
+    if len(trades) >= 4:
+        trades["tr_q"] = pd.qcut(
+            trades["tight_ratio"], q=4, labels=["Q1(low)", "Q2", "Q3", "Q4(high)"], duplicates="drop"
+        )
+        tr_q = trades.groupby("tr_q", observed=True).agg(
+            count=("win", "count"),
+            win_rate=("win", lambda x: x.mean() * 100),
+            avg_return=("net_return", "mean"),
+        )
+        print("\n  By tight_ratio quartile:")
+        print(tr_q.to_string())
+    else:
+        print(f"\n  (too few trades ({len(trades)}) for quartile analysis)")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 5. CHEAP SIDE ASK & PAYOUT ANALYSIS (v2)
@@ -300,16 +303,19 @@ if HAS_SHADOW and HAS_TRADES:
         print(f"  Losses avg vol: {vml['volatility'].mean():.7f}  med: {vml['volatility'].median():.7f}")
 
         vm = vol_merge.copy()
-        vm["vol_q"] = pd.qcut(vm["volatility"], q=4, labels=["Q1(low)", "Q2", "Q3", "Q4(high)"], duplicates="drop")
-        vq = vm.groupby("vol_q", observed=True).agg(
-            count=("win", "count"),
-            win_rate=("win", lambda x: x.mean() * 100),
-            avg_return=("net_return", "mean"),
-            vol_range_low=("volatility", lambda x: x.quantile(0.05)),
-            vol_range_high=("volatility", lambda x: x.quantile(0.95)),
-        )
-        print("\n  By volatility quartile:")
-        print(vq.to_string())
+        if len(vm) >= 4:
+            vm["vol_q"] = pd.qcut(vm["volatility"], q=4, labels=["Q1(low)", "Q2", "Q3", "Q4(high)"], duplicates="drop")
+            vq = vm.groupby("vol_q", observed=True).agg(
+                count=("win", "count"),
+                win_rate=("win", lambda x: x.mean() * 100),
+                avg_return=("net_return", "mean"),
+                vol_range_low=("volatility", lambda x: x.quantile(0.05)),
+                vol_range_high=("volatility", lambda x: x.quantile(0.95)),
+            )
+            print("\n  By volatility quartile:")
+            print(vq.to_string())
+        else:
+            print(f"\n  (too few trades ({len(vm)}) for volatility quartile analysis)")
 
         if len(vmw) > 0:
             print(f"\n  Winning vol IQR: [{vmw['volatility'].quantile(0.25):.7f} - {vmw['volatility'].quantile(0.75):.7f}]")
