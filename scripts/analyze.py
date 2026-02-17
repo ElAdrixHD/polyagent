@@ -36,7 +36,8 @@ HAS_ODDS_TRAILS = len(odds_trails) > 0
 if HAS_TRADES:
     trades["win"] = trades["net_return"] > 0
     trades["outcome_dir"] = trades["outcome"].str.upper()
-    trades["dist_em_ratio"] = trades["distance"] / trades["expected_move"].replace(0, np.nan)
+    trades["cheap_side_ask"] = trades["buy_ask"]  # buy_ask is always the cheap (underdog) side
+    trades["payout_ratio"] = 1.0 / trades["buy_ask"].replace(0, np.nan)
     trades["min_ask"] = trades[["yes_ask", "no_ask"]].min(axis=1)
     trades["max_ask"] = trades[["yes_ask", "no_ask"]].max(axis=1)
     trades["ask_imbalance"] = trades["max_ask"] - trades["min_ask"]
@@ -145,31 +146,38 @@ if HAS_TRADES:
     print(tr_q.to_string())
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 5. DISTANCE / EXPECTED_MOVE RATIO
+# 5. CHEAP SIDE ASK & PAYOUT ANALYSIS (v2)
 # ══════════════════════════════════════════════════════════════════════════════
 
 if HAS_TRADES:
-    print("\n[5] DISTANCE / EXPECTED_MOVE RATIO")
+    print("\n[5] CHEAP SIDE ASK & PAYOUT ANALYSIS")
     print("-" * 40)
-    valid = trades.dropna(subset=["dist_em_ratio"])
-    vw = valid[valid["win"]]
-    vl = valid[~valid["win"]]
-    print(f"  Wins   avg: {vw['dist_em_ratio'].mean():.4f}   med: {vw['dist_em_ratio'].median():.4f}")
-    print(f"  Losses avg: {vl['dist_em_ratio'].mean():.4f}   med: {vl['dist_em_ratio'].median():.4f}")
+    print(f"  Wins   avg ask: {win_df['cheap_side_ask'].mean():.4f}   avg payout: {win_df['payout_ratio'].mean():.1f}x")
+    print(f"  Losses avg ask: {loss_df['cheap_side_ask'].mean():.4f}   avg payout: {loss_df['payout_ratio'].mean():.1f}x")
 
-    valid = valid.copy()
-    valid["ratio_bin"] = pd.cut(
-        valid["dist_em_ratio"],
-        bins=[0, 0.5, 1.0, 2.0, 5.0, 9999],
-        labels=["<0.5", "0.5-1", "1-2", "2-5", ">5"],
+    trades_cp = trades.copy()
+    trades_cp["ask_bin"] = pd.cut(
+        trades_cp["cheap_side_ask"],
+        bins=[0, 0.05, 0.10, 0.15, 0.20, 0.30, 0.50, 1.0],
+        labels=["<0.05", "0.05-0.10", "0.10-0.15", "0.15-0.20", "0.20-0.30", "0.30-0.50", "0.50+"],
     )
-    ratio_grp = valid.groupby("ratio_bin", observed=True).agg(
+    ask_grp = trades_cp.groupby("ask_bin", observed=True).agg(
         count=("win", "count"),
         win_rate=("win", lambda x: x.mean() * 100),
         avg_return=("net_return", "mean"),
+        total_pnl=("net_return", "sum"),
+        avg_payout=("payout_ratio", "mean"),
     )
-    print("\n  By distance/expected_move bucket:")
-    print(ratio_grp.to_string())
+    print("\n  By cheap_side_ask bucket:")
+    print(ask_grp.to_string())
+
+    # Expected value by ask bucket
+    print("\n  EV analysis (implied prob vs actual WR):")
+    for idx, row in ask_grp.iterrows():
+        wr = row["win_rate"]
+        payout = row["avg_payout"]
+        ev = (wr/100) * (payout - 1) - (1 - wr/100)
+        print(f"    {str(idx):12s}: WR={wr:5.1f}%  payout={payout:.1f}x  EV={ev:+.2f}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 6. MISSED OPPORTUNITIES (SHADOW DATA)
@@ -515,43 +523,42 @@ if HAS_ODDS_TRAILS and HAS_SHADOW:
 # ══════════════════════════════════════════════════════════════════════════════
 
 if HAS_SIGNALS:
-    print("\n[13] SIGNAL ENGINE STATISTICS")
+    print("\n[13] SIGNAL ENGINE STATISTICS (v2)")
     print("-" * 40)
     total_sigs = len(signals)
-    fired = signals[signals["would_have_fired"] == True]
-    not_fired = signals[signals["would_have_fired"] == False]
-    boost_only = not_fired[not_fired["would_have_passed_with_boost"] == True]
-    in_ew = signals[signals["in_execution_window"] == True]
+    in_ew = signals[signals["in_execution_window"] == True] if "in_execution_window" in signals.columns else pd.DataFrame()
 
     print(f"  Total signal evaluations       : {total_sigs}")
-    print(f"  In execution window            : {len(in_ew)}  ({len(in_ew)/total_sigs*100:.1f}%)")
-    print(f"  Would have fired (raw)         : {len(fired)}  ({len(fired)/total_sigs*100:.2f}%)")
-    print(f"  Only passes with boost         : {len(boost_only)}  ({len(boost_only)/total_sigs*100:.2f}%)")
+    if len(in_ew) > 0:
+        print(f"  In execution window            : {len(in_ew)}  ({len(in_ew)/total_sigs*100:.1f}%)")
 
-    if len(fired) > 0:
-        print(f"\n  ratio_raw stats for FIRED:")
-        print(f"    mean: {fired['ratio_raw'].mean():.4f}  med: {fired['ratio_raw'].median():.4f}  "
-              f"min: {fired['ratio_raw'].min():.4f}  max: {fired['ratio_raw'].max():.4f}")
-    if len(not_fired) > 0:
-        print(f"  ratio_raw stats for NOT-FIRED:")
-        print(f"    mean: {not_fired['ratio_raw'].mean():.4f}  med: {not_fired['ratio_raw'].median():.4f}")
+    # Skip reason breakdown
+    if "skip_reason" in signals.columns:
+        print(f"\n  Skip reasons:")
+        reasons = signals["skip_reason"].value_counts()
+        for reason, count in reasons.items():
+            if reason and str(reason) != "nan":
+                print(f"    {str(reason):35s}: {count:4d}  ({count/total_sigs*100:.1f}%)")
 
-    print(f"\n  Fire rate by asset:")
+    # Tight ratio stats
+    if "tight_ratio" in signals.columns:
+        skipped = signals[signals["skip_reason"].notna() & (signals["skip_reason"] != "")]
+        if len(skipped) > 0:
+            print(f"\n  tight_ratio in skipped signals:")
+            print(f"    mean: {skipped['tight_ratio'].mean():.4f}  med: {skipped['tight_ratio'].median():.4f}")
+
+    print(f"\n  Signal evaluations by asset:")
     sig_asset = signals.groupby("asset").agg(
-        total=("would_have_fired", "count"),
-        fired=("would_have_fired", "sum"),
-        fire_rate=("would_have_fired", lambda x: x.mean() * 100),
-        avg_ratio=("ratio_raw", "mean"),
+        total=("remaining", "count"),
+        avg_remaining=("remaining", "mean"),
         avg_dist=("distance", "mean"),
     )
     print(sig_asset.to_string())
 
-    if len(fired) > 0:
-        print(f"\n  Remaining seconds when FIRED:")
-        print(f"    mean: {fired['remaining'].mean():.2f}s  med: {fired['remaining'].median():.2f}s  "
-              f"min: {fired['remaining'].min():.2f}s  max: {fired['remaining'].max():.2f}s")
     if len(in_ew) > 0:
-        print(f"\n  In-execution-window fire rate: {in_ew['would_have_fired'].mean()*100:.1f}%")
+        print(f"\n  Remaining seconds (in exec window):")
+        print(f"    mean: {in_ew['remaining'].mean():.2f}s  med: {in_ew['remaining'].median():.2f}s  "
+              f"min: {in_ew['remaining'].min():.2f}s  max: {in_ew['remaining'].max():.2f}s")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 14. ENTRY/NO-ENTRY DECISION ANALYSIS

@@ -65,6 +65,8 @@ SHADOW_COLS = [
     "price_at_exec_window_start",
     "price_crossed_strike", "min_distance_to_strike", "max_distance_to_strike",
     "price_momentum_last_3s", "reversal_detected", "majority_at_exec_start",
+    "cheap_side_at_exec_start", "odds_momentum",
+    "potential_payout_ratio", "signal_would_fire_v2",
     "total_snapshots", "num_skipped_signals", "condition_id",
 ]
 
@@ -86,10 +88,10 @@ def export_shadow_markets(shadow):
 SIGNAL_COLS = [
     "market_timestamp", "market_question", "asset", "condition_id",
     "signal_timestamp", "remaining",
-    "in_execution_window", "would_have_fired", "would_have_passed_with_boost",
-    "distance", "raw_expected_move", "boosted_expected_move",
-    "ratio_raw", "ratio_boosted",
-    "current_price", "strike", "yes_price", "no_price", "price_side",
+    "in_execution_window", "would_have_fired",
+    "distance", "raw_expected_move",
+    "current_price", "strike", "yes_price", "no_price",
+    "tight_ratio", "price_side",
     "skip_reason",
 ]
 

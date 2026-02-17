@@ -27,9 +27,15 @@ class SignalEngine:
         self._skipped_signals: dict[str, list[dict]] = {}  # cid -> list of skip entries
 
     def check_signals(self) -> list[TightMarketOpportunity]:
+        """Evaluate all tracked markets for reversal-based entry.
+
+        REVERSAL THESIS: Buy the cheap side (underdog) when:
+        - The underdog is genuinely cheap (high payout potential)
+        - The market has a clear favorite (not hovering at 50/50)
+        - Momentum shows signs of reversal (price moving toward strike)
+        """
         opportunities: list[TightMarketOpportunity] = []
         profiles = self.tracker.get_all_profiles()
-        K = self.config.tmc_volatility_multiplier
 
         for profile in profiles:
             cid = profile.market.condition_id
@@ -49,18 +55,13 @@ class SignalEngine:
             if remaining < self.config.tmc_min_seconds_remaining:
                 continue
 
-            # Get live crypto price and volatility
+            # Get live crypto price
             current_price = self.price_feed.get_price(asset)
             raw_expected_move = self.price_feed.get_expected_move(
                 asset, remaining, self.config.tmc_volatility_window
             )
 
-            if current_price is None or raw_expected_move is None:
-                if remaining <= self.config.tmc_execution_window:
-                    logger.info(
-                        f"[TMC] SKIP {asset} '{q}' | "
-                        f"no Chainlink data (price={current_price} expected_move={raw_expected_move})"
-                    )
+            if current_price is None:
                 continue
 
             strike = profile.market.strike_price
@@ -70,76 +71,77 @@ class SignalEngine:
             # Build reusable context for skip recording
             ctx = self._build_context(
                 cid, remaining, distance, current_price, strike,
-                raw_expected_move, profile, in_exec,
+                raw_expected_move or 0, profile, in_exec,
             )
 
-            # Boost expected_move inside execution window
-            expected_move = (
-                raw_expected_move * self.config.tmc_volatility_boost_factor
-                if in_exec else raw_expected_move
-            )
-
-            # KEY SIGNAL: is the price close enough that a reversal is plausible?
-            signal_passes = expected_move > 0 and distance / expected_move <= K
-
-            # Skip low-volatility markets UNLESS distance ratio is already favorable
-            volatility = self.price_feed.get_volatility(
-                asset, self.config.tmc_volatility_window
-            )
-            if volatility is not None and volatility < self.config.tmc_min_volatility:
-                if not signal_passes:
-                    if in_exec:
-                        logger.info(
-                            f"[TMC] SKIP {asset} '{q}' | "
-                            f"low volatility + price too far"
-                        )
-                    continue
-
-            if not signal_passes:
-                if in_exec or remaining % 5 < 0.6:
-                    logger.info(
-                        f"[TMC] SKIP {asset} '{q}' | "
-                        f"dist=${distance:.2f} > {K}x em=${expected_move:.2f} | "
-                        f"remaining={remaining:.0f}s"
-                    )
-                self._record_skip(ctx)
-                continue
-
-            # Signal passes — but must be in execution window
+            # Must be in execution window to fire
             if not in_exec:
-                logger.info(
-                    f"[TMC] PRE-SIGNAL {asset} '{q}' | "
-                    f"price=${current_price:,.2f} strike=${strike:,.2f} | "
-                    f"remaining={remaining:.0f}s | waiting for exec window"
-                )
-                self._record_skip(ctx, would_have_fired=True)
+                # Log pre-signal status periodically
+                if remaining % 5 < 0.6:
+                    logger.info(
+                        f"[TMC] WATCH {asset} '{q}' | "
+                        f"price=${current_price:,.2f} strike=${strike:,.2f} | "
+                        f"remaining={remaining:.0f}s"
+                    )
                 continue
 
-            # === EXECUTION WINDOW GATES ===
+            # === REVERSAL ENTRY GATES ===
 
-            raw_ratio = distance / raw_expected_move if raw_expected_move > 0 else float("inf")
+            # Gate 1: Live CLOB asks — need valid prices to evaluate
+            token_ids = profile.market.token_ids
+            yes_ask = self.client.get_best_ask(token_ids[0])
+            no_ask = self.client.get_best_ask(token_ids[1])
 
-            # Gate 1: raw distance ratio — with odds-based bypass
-            if raw_ratio > self.config.tmc_max_distance_ratio:
-                # Check if odds justify bypassing the distance gate
-                if self._has_odds_bypass(profile, current_price, strike):
-                    logger.info(
-                        f"[TMC] BYPASS {asset} '{q}' | "
-                        f"raw_ratio={raw_ratio:.1f} > max BUT cheap side is cheap + contrarian momentum | "
-                        f"remaining={remaining:.0f}s"
-                    )
-                else:
-                    self._record_skip(ctx, skip_reason="distance_ratio_too_high")
-                    logger.info(
-                        f"[TMC] SKIP {asset} '{q}' | "
-                        f"raw_ratio={raw_ratio:.1f} > max {self.config.tmc_max_distance_ratio} | "
-                        f"remaining={remaining:.0f}s"
-                    )
-                    continue
+            if yes_ask is None or no_ask is None or yes_ask <= 0 or no_ask <= 0:
+                self._record_skip(ctx, skip_reason="no_valid_asks")
+                logger.info(
+                    f"[TMC] SKIP {asset} '{q}' | "
+                    f"no valid asks (YES={yes_ask} NO={no_ask})"
+                )
+                continue
 
-            # Gate 2: block confirming momentum
-            # If price momentum in last 3s is moving WITH the majority, skip
-            # (0% historical reversal rate when momentum confirms the favorite)
+            # Determine the cheap side (underdog)
+            cheap_side, cheap_side_ask, buy_token_id = self._get_cheap_side(
+                current_price, strike, yes_ask, no_ask, token_ids
+            )
+
+            # Gate 2: Cheap side must be in target range
+            # Too cheap (< min) = basically no chance, too expensive (> max) = low payout
+            min_ask = self.config.tmc_min_cheap_ask
+            max_ask = self.config.tmc_max_entry_ask
+
+            if cheap_side_ask < min_ask:
+                self._record_skip(ctx, skip_reason="cheap_side_too_cheap")
+                logger.info(
+                    f"[TMC] SKIP {asset} '{q}' | "
+                    f"{cheap_side} ask={cheap_side_ask:.3f} < min {min_ask:.3f} | "
+                    f"remaining={remaining:.0f}s"
+                )
+                continue
+
+            if cheap_side_ask > max_ask:
+                self._record_skip(ctx, skip_reason="cheap_side_too_expensive")
+                logger.info(
+                    f"[TMC] SKIP {asset} '{q}' | "
+                    f"{cheap_side} ask={cheap_side_ask:.3f} > max {max_ask:.3f} | "
+                    f"remaining={remaining:.0f}s"
+                )
+                continue
+
+            # Gate 3: Tight ratio — market must have a clear favorite
+            # Low tight_ratio = decisive market (good), high = hovering at 50/50 (bad)
+            if profile.tight_ratio >= self.config.tmc_max_tight_ratio:
+                self._record_skip(ctx, skip_reason="tight_ratio_too_high")
+                logger.info(
+                    f"[TMC] SKIP {asset} '{q}' | "
+                    f"tight_ratio={profile.tight_ratio:.3f} >= max {self.config.tmc_max_tight_ratio:.3f} | "
+                    f"remaining={remaining:.0f}s"
+                )
+                continue
+
+            # Gate 4: Block confirming momentum
+            # If price momentum is CONFIRMING the majority (moving away from strike),
+            # there is no reversal happening — skip.
             if self.config.tmc_block_confirming_momentum:
                 momentum = self._get_price_momentum(asset, remaining)
                 if momentum is not None and self._is_confirming_momentum(
@@ -153,37 +155,23 @@ class SignalEngine:
                     )
                     continue
 
-            # Gate 3: live CLOB asks
-            token_ids = profile.market.token_ids
-            yes_ask = self.client.get_best_ask(token_ids[0])
-            no_ask = self.client.get_best_ask(token_ids[1])
-
-            if yes_ask is None or no_ask is None or yes_ask <= 0 or no_ask <= 0:
-                self._record_skip(ctx, skip_reason="no_valid_asks")
+            # Gate 5: Odds momentum — check if underdog odds are trending up
+            # This is optional: if odds are moving TOWARD the underdog, it's a
+            # stronger reversal signal. We only BLOCK if odds are moving strongly
+            # AGAINST the underdog (the favorite is getting even stronger).
+            odds_direction = self._get_odds_momentum(profile, current_price, strike)
+            if odds_direction == "confirming":
+                self._record_skip(ctx, skip_reason="odds_confirming_majority")
                 logger.info(
                     f"[TMC] SKIP {asset} '{q}' | "
-                    f"no valid asks (YES={yes_ask} NO={no_ask})"
-                )
-                continue
-
-            # Gate 4: cheap side too expensive
-            if current_price > strike:
-                cheap_side_ask, cheap_side = no_ask, "NO"
-            else:
-                cheap_side_ask, cheap_side = yes_ask, "YES"
-
-            max_entry = self.config.tmc_max_entry_ask
-            if max_entry > 0 and cheap_side_ask > max_entry:
-                self._record_skip(ctx, skip_reason="cheap_side_too_expensive")
-                logger.info(
-                    f"[TMC] SKIP {asset} '{q}' | "
-                    f"cheap side ({cheap_side}) ask={cheap_side_ask:.3f} > max {max_entry:.3f}"
+                    f"odds trending against underdog | "
+                    f"remaining={remaining:.0f}s"
                 )
                 continue
 
             # === FIRE SIGNAL ===
-            buy_token_id = token_ids[1] if cheap_side == "NO" else token_ids[0]
             amount = self.config.tmc_max_investment
+            payout_ratio = 1.0 / cheap_side_ask if cheap_side_ask > 0 else 0
 
             opp = TightMarketOpportunity(
                 market=profile.market,
@@ -198,61 +186,79 @@ class SignalEngine:
                 strike_price=strike,
                 current_crypto_price=current_price,
                 distance=distance,
-                expected_move=expected_move,
+                expected_move=raw_expected_move or 0,
             )
             opportunities.append(opp)
             self._fired.add(cid)
 
             logger.info(
                 f"[TMC] >>> SIGNAL FIRED: {asset} '{q}' | "
-                f"BUY {cheap_side}@${cheap_side_ask:.3f} ${amount:.2f} | "
+                f"BUY {cheap_side}@${cheap_side_ask:.3f} ${amount:.2f} "
+                f"(payout={payout_ratio:.1f}x) | "
                 f"YES=${yes_ask:.3f} NO=${no_ask:.3f} | "
+                f"tight_ratio={profile.tight_ratio:.3f} | "
                 f"price=${current_price:,.2f} strike=${strike:,.2f} "
-                f"dist=${distance:.2f} em=${expected_move:.2f} | "
-                f"remaining={remaining:.0f}s"
+                f"dist=${distance:.2f} | "
+                f"remaining={remaining:.0f}s | "
+                f"odds_dir={odds_direction}"
             )
 
         return opportunities
 
-    # --- Odds-based bypass logic ---
+    # --- Helpers ---
 
-    def _has_odds_bypass(self, profile, current_price: float, strike: float) -> bool:
-        """Allow bypassing the distance ratio gate when odds signal a reversal.
+    def _get_cheap_side(
+        self,
+        current_price: float,
+        strike: float,
+        yes_ask: float,
+        no_ask: float,
+        token_ids: list[str],
+    ) -> tuple[str, float, str]:
+        """Determine the cheap (underdog) side based on price vs strike.
 
-        Conditions:
-          1. Cheap side ask is very cheap (< tmc_odds_bypass_max_ask, e.g. $0.15)
-          2. Odds momentum is contrarian — moving AGAINST the current majority
+        Returns (side_name, side_ask, token_id).
+        """
+        if current_price > strike:
+            # Price above strike → majority is YES → underdog is NO
+            return "NO", no_ask, token_ids[1]
+        else:
+            # Price below strike → majority is NO → underdog is YES
+            return "YES", yes_ask, token_ids[0]
+
+    def _get_odds_momentum(
+        self, profile, current_price: float, strike: float
+    ) -> str:
+        """Check if odds are moving toward the underdog (contrarian) or the favorite.
+
+        Returns:
+          "contrarian" — underdog gaining probability (good for reversal)
+          "confirming" — favorite getting even stronger (bad for reversal)
+          "neutral"    — no significant movement
         """
         if not profile.snapshots or len(profile.snapshots) < 3:
-            return False
+            return "neutral"
 
-        # Determine cheap side from price vs strike
-        if current_price > strike:
-            cheap_price = profile.current_no
-        else:
-            cheap_price = profile.current_yes
-
-        # Condition 1: cheap side must be very cheap
-        if cheap_price > self.config.tmc_odds_bypass_max_ask:
-            return False
-
-        # Condition 2: odds must be moving in a contrarian direction
-        # Compare recent odds trend (last 5 vs first 5 snapshots in exec window)
         snaps = profile.snapshots
         n = min(5, len(snaps) // 2)
         if n < 2:
-            return False
+            return "neutral"
 
         early_avg = sum(s.yes_price for s in snaps[:n]) / n
         late_avg = sum(s.yes_price for s in snaps[-n:]) / n
         odds_shift = late_avg - early_avg  # positive = YES trending up
 
-        # If price > strike, majority is YES, so contrarian = YES trending DOWN (shift < 0)
-        # If price < strike, majority is NO,  so contrarian = YES trending UP  (shift > 0)
+        threshold = 0.02  # minimum shift to be considered directional
+
+        if abs(odds_shift) < threshold:
+            return "neutral"
+
         if current_price > strike:
-            return odds_shift < -0.01  # YES dropping = contrarian to majority
+            # Majority is YES. Contrarian = YES dropping (shift < 0)
+            return "contrarian" if odds_shift < -threshold else "confirming"
         else:
-            return odds_shift > 0.01  # YES rising = contrarian to majority
+            # Majority is NO. Contrarian = YES rising (shift > 0)
+            return "contrarian" if odds_shift > threshold else "confirming"
 
     # --- Momentum analysis ---
 
@@ -284,7 +290,7 @@ class SignalEngine:
         else:
             return momentum < -threshold  # moving further below strike
 
-    # --- Skip recording (simplified) ---
+    # --- Skip recording ---
 
     def get_skipped_signals(self, condition_id: str) -> list[dict]:
         return self._skipped_signals.get(condition_id, [])
@@ -305,7 +311,6 @@ class SignalEngine:
         in_execution_window: bool,
     ) -> dict:
         """Build a reusable context dict for skip recording."""
-        boosted_em = raw_expected_move * self.config.tmc_volatility_boost_factor
         decimals = 6 if strike < 10 else (4 if strike < 1000 else 2)
         return {
             "cid": cid,
@@ -313,17 +318,11 @@ class SignalEngine:
             "in_execution_window": in_execution_window,
             "distance": round(distance, decimals),
             "raw_expected_move": round(raw_expected_move, decimals),
-            "boosted_expected_move": round(boosted_em, decimals),
-            "ratio_raw": round(
-                distance / raw_expected_move if raw_expected_move > 0 else float("inf"), 2
-            ),
-            "ratio_boosted": round(
-                distance / boosted_em if boosted_em > 0 else float("inf"), 2
-            ),
             "current_price": round(current_price, decimals),
             "strike": round(strike, decimals),
             "yes_price": round(profile.current_yes, 4),
             "no_price": round(profile.current_no, 4),
+            "tight_ratio": round(profile.tight_ratio, 4),
             "price_side": "above" if current_price > strike else "below",
         }
 
@@ -333,12 +332,10 @@ class SignalEngine:
         would_have_fired: bool = False,
         skip_reason: str = "",
     ) -> None:
-        K = self.config.tmc_volatility_multiplier
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             **{k: v for k, v in ctx.items() if k != "cid"},
             "would_have_fired": would_have_fired,
-            "would_have_passed_with_boost": ctx["ratio_boosted"] <= K,
             "skip_reason": skip_reason,
         }
         cid = ctx["cid"]

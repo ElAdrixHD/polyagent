@@ -1,10 +1,10 @@
-# Tight Market Crypto (TMC) Strategy
+# Tight Market Crypto (TMC) Strategy — v2 Reversal-Based
 
 ## What This Strategy Does
 
-TMC trades **short-duration crypto prediction markets** on Polymarket (5 or 15-minute windows like "Will BTC be above $X at 2:15PM?"). It detects markets where the current crypto price is **close to the strike price** relative to expected volatility, then buys the side the price is currently on — betting that the price won't move enough to cross the strike before expiry.
+TMC trades **short-duration crypto prediction markets** on Polymarket (5 or 15-minute windows like "Will BTC be above $X at 2:15PM?"). It detects markets where the crypto price has created a **clear underdog** (one side priced cheaply), then bets on that underdog — gambling that a **last-second reversal** will flip the outcome and pay a large multiple.
 
-**Core thesis**: If the price hasn't moved much from the strike and there's little time left, the current side (YES or NO) is statistically likely to win. The strategy enters when `distance_from_strike / expected_move <= K`.
+**Core thesis**: When the cheap side (underdog) has a high payout ratio (3x-20x) and there are signs of contrarian momentum, a last-second price reversal can deliver outsized returns that more than compensate for the losses on the trades that don't reverse.
 
 ---
 
@@ -22,7 +22,7 @@ TMC trades **short-duration crypto prediction markets** on Polymarket (5 or 15-m
 └─────────┼───────────────────┼──────────────────────────────────┘
           │                   │
     ┌─────▼──────┐    ┌──────▼──────────┐
-    │ Market     │    │ Binance Feed    │  (WebSocket thread)
+    │ Market     │    │ Chainlink Feed  │  (WebSocket thread)
     │ Finder     │    │ (live prices +  │
     │ (Gamma API)│    │  volatility)    │
     └────────────┘    └─────────────────┘
@@ -39,35 +39,38 @@ TMC trades **short-duration crypto prediction markets** on Polymarket (5 or 15-m
 | File                   | Role                                                                                                                                       |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `coordinator.py`       | Main orchestrator — runs the event loop, discovers markets, triggers signals, executes trades, handles market expiry and outcome recording |
-| `signal_engine.py`     | Core decision logic — evaluates whether a market meets entry criteria based on price distance vs. expected volatility move                 |
+| `signal_engine.py`     | Core decision logic — evaluates reversal potential using underdog price, tight_ratio, and momentum signals                                 |
 | `executor.py`          | Trade execution — places FOK orders via CLOB API, tracks daily loss, records trades to JSON, updates outcomes post-resolution              |
 | `market_finder.py`     | Market discovery — queries Gamma API for active 15-min crypto markets, parses token IDs and time windows                                   |
-| `binance_feed.py`      | Real-time price data — Binance WebSocket feed for BTC/ETH/SOL/XRP, calculates rolling volatility and expected moves                        |
+| `chainlink_feed.py`    | Real-time price data — Chainlink WebSocket feed for BTC/ETH/SOL/XRP, calculates rolling volatility and expected moves                      |
 | `tightness_tracker.py` | Odds monitoring — Polymarket WebSocket feed, records YES/NO price snapshots, tracks how "tight" (close to 50/50) a market is               |
 | `models.py`            | Dataclasses for all domain objects (CryptoMarket, OddsSnapshot, TightnessProfile, TightMarketOpportunity, TightMarketTradeResult)          |
 
 ---
 
-## The Signal: How Entry Decisions Work
+## The Signal: How Entry Decisions Work (v2 — Reversal-Based)
 
-### Key Formula
+### Entry Criteria
 
-```
-signal_fires = (distance / expected_move) <= K
-```
+A signal fires when ALL of these gates pass:
 
-Where:
+1. **Cheap Side in Range**: `tmc_min_cheap_ask ≤ cheap_side_ask ≤ tmc_max_entry_ask` (default: 0.05–0.30). This ensures the underdog has a meaningful payout (3.3x–20x) but isn't so cheap it has no realistic chance.
 
-- **distance** = `|current_crypto_price - strike_price|` — how far the price has moved from where it was at the start of the 15-min window
-- **expected_move** = `volatility * price * sqrt(seconds_remaining)` — statistically expected price movement in the remaining time
-- **volatility** = standard deviation of log-returns over the last 5 minutes (from Binance tick data)
-- **K** = `tmc_volatility_multiplier` (default: 1.0) — the threshold. Lower K = stricter filter
+2. **Market is Decisive** (`tight_ratio`): `tight_ratio < tmc_max_tight_ratio` (default: 0.40). A low tight_ratio means the market has had a clear favorite — exactly the setup needed for a reversal to pay off.
 
-### Intuition
+3. **Contrarian Price Momentum**: Price must NOT be confirming the majority. If the price is moving away from strike (reinforcing the favorite), there is no reversal — skip.
 
-If `distance / expected_move = 0.3`, the price has only moved 0.3 standard deviations from strike. With little time left, the price is unlikely to cross the strike — so the current winning side is a good bet.
+4. **Odds Not Confirming Majority**: The underdog's odds must not be dropping (favorite getting stronger). We block when odds strongly confirm the majority.
 
-If `distance / expected_move = 2.0`, the price has moved 2 standard deviations — the outcome is already strongly decided and the odds will reflect that (no edge left).
+5. **In Execution Window**: Signal only fires within `tmc_execution_window` seconds of expiry.
+
+### Why This Works (The Edge)
+
+Historical data shows:
+
+- **10-20% implied probability bucket**: actual WR = 20% vs. implied 14.4% → **EV = +39%**
+- `tight_ratio < 0.40` alone turns PnL from **-$13.94 to +$14.15** (ROI +67.4%)
+- The strategy removes 33 of 49 historical losses while keeping 5 of 8 wins
 
 ### Timeline and Windows
 
@@ -76,34 +79,28 @@ Market lifetime (15 minutes):
 |=====================================================|
 0min                                               15min
 
-                    Entry Window (last 180s):
-                              |===================|
-                              180s            0s (expiry)
+                    Entry Window (last 30s):
+                                         |===========|
+                                         30s       0s (expiry)
 
-                         Execution Window (last 60s):
-                                       |==========|
-                                       60s     0s
-
-                              Volatility Boost (last 15s):
-                                            |=====|
-                                            15s  0s
+                         Execution Window (last 11s):
+                                              |======|
+                                              11s   0s
 ```
-
-1. **Entry Window** (180s before expiry): Signal engine starts evaluating. Signals detected here but outside the execution window are logged as **PRE-SIGNALS** (shadow data, no trade).
-2. **Execution Window** (60s before expiry): Signals fire for real and trigger trades. This narrow window maximizes signal quality.
-3. **Volatility Boost** (15s before expiry): `expected_move` is multiplied by `tmc_volatility_boost_factor` (default 2.0x) to account for erratic price behavior near expiry.
 
 ### Skip Conditions (Signal Does NOT Fire)
 
 - Already fired for this market (one-shot per market)
-- Strike price not captured yet (market window hasn't started)
-- Outside entry window (>180s or already expired)
-- No Binance price available
-- `distance / expected_move > K` (main rejection — price moved too far)
+- Strike price not captured yet
+- Outside entry window (>30s or already expired)
+- Below min seconds remaining (<5s)
+- No Chainlink price available
 - CLOB asks not available or invalid (<=0)
-- Cheap side too expensive: `cheap_side_ask > tmc_max_entry_ask` (default 0.50)
-- Confirming momentum: price momentum in last 3s confirms majority side (0% historical WR)
-- **Odds bypass**: When `distance/expected_move > max`, trade is ALLOWED if cheap side ask < `tmc_odds_bypass_max_ask` (default 0.15) AND odds show contrarian momentum
+- **Cheap side too cheap**: `cheap_side_ask < tmc_min_cheap_ask` (no realistic chance)
+- **Cheap side too expensive**: `cheap_side_ask > tmc_max_entry_ask` (low payout, ~50/50 market)
+- **Tight ratio too high**: `tight_ratio >= tmc_max_tight_ratio` (market is indecisive)
+- **Confirming momentum**: price moving away from strike (favorite getting stronger)
+- **Odds confirming majority**: underdog odds are dropping
 
 ---
 

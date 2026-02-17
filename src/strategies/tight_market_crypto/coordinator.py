@@ -324,12 +324,44 @@ class TightMarketCryptoCoordinator:
         # Did outcome flip in last seconds? Compare majority side at exec_start vs final
         reversal_detected = False
         majority_at_exec_start = None
+        cheap_side_at_exec_start = None
+        odds_momentum = None
+
         if odds_exec_trail:
             first = odds_exec_trail[0] if odds_exec_trail else None
             if first:
                 majority_at_exec_start = "YES" if first["yes"] > first["no"] else "NO"
+                # Cheap side is the opposite of majority
+                cheap_side_at_exec_start = first["no"] if majority_at_exec_start == "YES" else first["yes"]
             if majority_at_exec_start and outcome:
                 reversal_detected = majority_at_exec_start != outcome
+
+            # Odds momentum: did the underdog gain ground during exec window?
+            if len(odds_exec_trail) >= 2:
+                first_o = odds_exec_trail[0]
+                last_o = odds_exec_trail[-1]
+                if majority_at_exec_start == "YES":
+                    # Underdog is NO — check if NO odds went up
+                    odds_momentum = last_o["no"] - first_o["no"]
+                else:
+                    # Underdog is YES — check if YES odds went up
+                    odds_momentum = last_o["yes"] - first_o["yes"]
+
+        # --- V2 signal simulation ---
+        # Would the new reversal-based signal have fired?
+        min_ask = self.config.tmc_min_cheap_ask
+        max_ask = self.config.tmc_max_entry_ask
+        max_tr = self.config.tmc_max_tight_ratio
+
+        signal_would_fire_v2 = False
+        potential_payout_ratio = None
+
+        if cheap_side_at_exec_start is not None and profile:
+            potential_payout_ratio = round(1.0 / cheap_side_at_exec_start, 2) if cheap_side_at_exec_start > 0 else None
+            tr = profile.tight_ratio if profile else 1.0
+            ask_in_range = min_ask <= cheap_side_at_exec_start <= max_ask
+            tr_ok = tr < max_tr
+            signal_would_fire_v2 = ask_in_range and tr_ok
 
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -344,7 +376,7 @@ class TightMarketCryptoCoordinator:
             "tight_ratio": profile.tight_ratio if profile else None,
             "final_yes": profile.current_yes if profile else None,
             "final_no": profile.current_no if profile else None,
-            # --- New: execution window analysis ---
+            # --- Execution window analysis ---
             "volatility": round(volatility, 8) if volatility else None,
             "expected_move_exec_window": round(expected_move_5s, decimals) if expected_move_5s else None,
             "price_at_exec_window_start": price_at_exec_start,
@@ -354,6 +386,11 @@ class TightMarketCryptoCoordinator:
             "price_momentum_last_3s": price_momentum,
             "reversal_detected": reversal_detected,
             "majority_at_exec_start": majority_at_exec_start,
+            # --- V2 validation fields ---
+            "cheap_side_at_exec_start": cheap_side_at_exec_start,
+            "odds_momentum": round(odds_momentum, 4) if odds_momentum is not None else None,
+            "potential_payout_ratio": potential_payout_ratio,
+            "signal_would_fire_v2": signal_would_fire_v2,
             # --- Trails (compact, 1/sec for exec window, 1/5sec for entry window) ---
             "crypto_price_trail_exec_window": crypto_exec_trail,
             "crypto_price_trail_entry_window": crypto_entry_trail,
@@ -374,5 +411,6 @@ class TightMarketCryptoCoordinator:
         SHADOW_FILE.write_text(json.dumps(entries, indent=2))
         logger.info(
             f"[TMC] Shadow logged: {market.asset} '{market.question[:40]}' | "
-            f"outcome={outcome} traded={was_traded} skips={len(skipped_signals)}"
+            f"outcome={outcome} traded={was_traded} skips={len(skipped_signals)} | "
+            f"v2_fire={signal_would_fire_v2} payout={potential_payout_ratio}x"
         )
