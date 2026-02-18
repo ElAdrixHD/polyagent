@@ -43,15 +43,18 @@ class TightMarketOpportunity:
     profile: TightnessProfile
     yes_ask: float
     no_ask: float
-    buy_side: str  # "YES" or "NO" (the underdog)
+    buy_side: str  # "YES" or "NO" (the favorite — model confirms majority)
     buy_token_id: str
     buy_ask: float
-    amount: float  # USD total bet on underdog
+    amount: float  # USD total bet
     total_cost: float  # = amount (single side)
     strike_price: float  # captured at market open
     current_crypto_price: float  # Chainlink price at signal time
-    distance: float  # abs(current - strike) in $
-    expected_move: float  # volatility-based expected move in $
+    # Black-Scholes model fields
+    model_prob: float  # N(d₂) probability
+    market_prob: float  # market implied probability for our bet side
+    edge: float  # model_prob - market_prob
+    volatility: float  # σ used in calculation
     timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
 

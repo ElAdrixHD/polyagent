@@ -28,16 +28,6 @@ services:
     profiles:
       - tools
 
-  reversal:
-    build: .
-    container_name: polyagent-reversal
-    env_file: .env
-    volumes:
-      - polyagent-data:/app/data
-    command: python scripts/reversal_analysis.py
-    profiles:
-      - tools
-
   backtest:
     build: .
     container_name: polyagent-backtest

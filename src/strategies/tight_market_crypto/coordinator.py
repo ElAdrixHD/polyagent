@@ -194,8 +194,7 @@ class TightMarketCryptoCoordinator:
                     f"[TMC] STATUS: {p.market.asset} '{p.market.question[:45]}' | "
                     f"{p.seconds_remaining:.0f}s left | "
                     f"snaps={len(p.snapshots)} | "
-                    f"YES={p.current_yes:.3f} NO={p.current_no:.3f} | "
-                    f"tight={p.tight_ratio:.0%}"
+                    f"YES={p.current_yes:.3f} NO={p.current_no:.3f}"
                 )
 
     def _save_shadow_entry(
@@ -208,7 +207,6 @@ class TightMarketCryptoCoordinator:
         was_traded: bool,
         skipped_signals: list[dict],
     ) -> None:
-        # --- Build execution window analysis ---
         exec_window = self.config.tmc_execution_window
         entry_window = self.config.tmc_entry_window
         end_ts = market.end_date.timestamp()
@@ -219,14 +217,9 @@ class TightMarketCryptoCoordinator:
         # Decimal precision based on asset price magnitude
         decimals = 6 if strike and strike < 10 else (4 if strike and strike < 1000 else 2)
 
-        # Crypto price trail during execution window (last N seconds)
+        # Crypto price trail during execution window
         crypto_exec_trail = []
         crypto_entry_trail = []
-        price_at_exec_start = None
-        price_crossed_strike = False
-        min_distance = None
-        max_distance = None
-        price_momentum = None  # $/sec in last 3 seconds
 
         raw_exec_history = self._chainlink_feed.get_price_history(
             market.asset, exec_start_ts, end_ts
@@ -235,43 +228,20 @@ class TightMarketCryptoCoordinator:
             market.asset, entry_start_ts, end_ts
         )
 
-        if raw_exec_history and strike is not None:
-            # Sampled trail: one point per second for compactness
+        if raw_exec_history:
             seen_seconds = set()
             for ts, px in raw_exec_history:
                 sec_key = int(ts)
                 if sec_key not in seen_seconds:
                     seen_seconds.add(sec_key)
-                    crypto_exec_trail.append({
-                        "t": round(end_ts - ts, 1),  # seconds before expiry
+                    trail_entry = {
+                        "t": round(end_ts - ts, 1),
                         "price": round(px, decimals),
-                        "dist": round(abs(px - strike), decimals),
-                    })
+                    }
+                    if strike is not None:
+                        trail_entry["dist"] = round(abs(px - strike), decimals)
+                    crypto_exec_trail.append(trail_entry)
 
-            price_at_exec_start = round(raw_exec_history[0][1], decimals)
-
-            # Strike crossing detection
-            prev_side = None
-            for _, px in raw_exec_history:
-                side = "above" if px > strike else "below"
-                if prev_side is not None and side != prev_side:
-                    price_crossed_strike = True
-                    break
-                prev_side = side
-
-            # Min/max distance to strike during execution window
-            distances = [abs(px - strike) for _, px in raw_exec_history]
-            min_distance = round(min(distances), decimals)
-            max_distance = round(max(distances), decimals)
-
-            # Price momentum: avg $/sec over last 3 seconds of data
-            last_3s = [(ts, px) for ts, px in raw_exec_history if ts >= end_ts - 3]
-            if len(last_3s) >= 2:
-                dt = last_3s[-1][0] - last_3s[0][0]
-                dp = last_3s[-1][1] - last_3s[0][1]
-                price_momentum = round(dp / dt, decimals) if dt > 0 else None
-
-        # Sampled entry-window trail (one per ~5 seconds to keep compact)
         if raw_entry_history:
             seen_5s = set()
             for ts, px in raw_entry_history:
@@ -299,7 +269,6 @@ class TightMarketCryptoCoordinator:
                             "no": round(snap.no_price, 4),
                         })
 
-            # Entry-window odds sampled every ~5 seconds
             seen_5s_odds = set()
             for snap in profile.snapshots:
                 if snap.timestamp >= entry_start_ts:
@@ -312,56 +281,22 @@ class TightMarketCryptoCoordinator:
                             "no": round(snap.no_price, 4),
                         })
 
-        # Volatility metrics at expiry
+        # Volatility at expiry
         volatility = self._chainlink_feed.get_volatility(
             market.asset, self.config.tmc_volatility_window
         )
-        expected_move_5s = self._chainlink_feed.get_expected_move(
-            market.asset, exec_window, self.config.tmc_volatility_window
-        )
 
-        # --- Reversal analysis ---
-        # Did outcome flip in last seconds? Compare majority side at exec_start vs final
-        reversal_detected = False
-        majority_at_exec_start = None
-        cheap_side_at_exec_start = None
-        odds_momentum = None
-
-        if odds_exec_trail:
-            first = odds_exec_trail[0] if odds_exec_trail else None
-            if first:
-                majority_at_exec_start = "YES" if first["yes"] > first["no"] else "NO"
-                # Cheap side is the opposite of majority
-                cheap_side_at_exec_start = first["no"] if majority_at_exec_start == "YES" else first["yes"]
-            if majority_at_exec_start and outcome:
-                reversal_detected = majority_at_exec_start != outcome
-
-            # Odds momentum: did the underdog gain ground during exec window?
-            if len(odds_exec_trail) >= 2:
-                first_o = odds_exec_trail[0]
-                last_o = odds_exec_trail[-1]
-                if majority_at_exec_start == "YES":
-                    # Underdog is NO — check if NO odds went up
-                    odds_momentum = last_o["no"] - first_o["no"]
-                else:
-                    # Underdog is YES — check if YES odds went up
-                    odds_momentum = last_o["yes"] - first_o["yes"]
-
-        # --- V2 signal simulation ---
-        # Would the new reversal-based signal have fired?
-        min_ask = self.config.tmc_min_cheap_ask
-        max_ask = self.config.tmc_max_entry_ask
-        max_tr = self.config.tmc_max_tight_ratio
-
-        signal_would_fire_v2 = False
-        potential_payout_ratio = None
-
-        if cheap_side_at_exec_start is not None and profile:
-            potential_payout_ratio = round(1.0 / cheap_side_at_exec_start, 2) if cheap_side_at_exec_start > 0 else None
-            tr = profile.tight_ratio if profile else 1.0
-            ask_in_range = min_ask <= cheap_side_at_exec_start <= max_ask
-            tr_ok = tr < max_tr
-            signal_would_fire_v2 = ask_in_range and tr_ok
+        # Extract model fields from skipped signals (last evaluation)
+        model_prob = None
+        market_prob = None
+        edge = None
+        bet_side = None
+        if skipped_signals:
+            last_skip = skipped_signals[-1]
+            model_prob = last_skip.get("model_prob")
+            market_prob = last_skip.get("market_prob")
+            edge = last_skip.get("edge")
+            bet_side = last_skip.get("bet_side")
 
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -373,25 +308,15 @@ class TightMarketCryptoCoordinator:
             "outcome": outcome,
             "was_traded": was_traded,
             "total_snapshots": len(profile.snapshots) if profile else 0,
-            "tight_ratio": profile.tight_ratio if profile else None,
             "final_yes": profile.current_yes if profile else None,
             "final_no": profile.current_no if profile else None,
-            # --- Execution window analysis ---
+            # Black-Scholes model fields
             "volatility": round(volatility, 8) if volatility else None,
-            "expected_move_exec_window": round(expected_move_5s, decimals) if expected_move_5s else None,
-            "price_at_exec_window_start": price_at_exec_start,
-            "price_crossed_strike": price_crossed_strike,
-            "min_distance_to_strike": min_distance,
-            "max_distance_to_strike": max_distance,
-            "price_momentum_last_3s": price_momentum,
-            "reversal_detected": reversal_detected,
-            "majority_at_exec_start": majority_at_exec_start,
-            # --- V2 validation fields ---
-            "cheap_side_at_exec_start": cheap_side_at_exec_start,
-            "odds_momentum": round(odds_momentum, 4) if odds_momentum is not None else None,
-            "potential_payout_ratio": potential_payout_ratio,
-            "signal_would_fire_v2": signal_would_fire_v2,
-            # --- Trails (compact, 1/sec for exec window, 1/5sec for entry window) ---
+            "model_prob": model_prob,
+            "market_prob": market_prob,
+            "edge": edge,
+            "bet_side": bet_side,
+            # Trails (compact, 1/sec for exec window, 1/5sec for entry window)
             "crypto_price_trail_exec_window": crypto_exec_trail,
             "crypto_price_trail_entry_window": crypto_entry_trail,
             "odds_trail_exec_window": odds_exec_trail,
@@ -412,5 +337,5 @@ class TightMarketCryptoCoordinator:
         logger.info(
             f"[TMC] Shadow logged: {market.asset} '{market.question[:40]}' | "
             f"outcome={outcome} traded={was_traded} skips={len(skipped_signals)} | "
-            f"v2_fire={signal_would_fire_v2} payout={potential_payout_ratio}x"
+            f"model_prob={model_prob} edge={edge}"
         )

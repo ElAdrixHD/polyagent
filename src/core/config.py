@@ -53,13 +53,10 @@ class Config:
     tmc_discovery_interval: int
     tmc_crypto_assets: str
     tmc_volatility_window: int
-    tmc_max_entry_ask: float
-    tmc_min_cheap_ask: float
-    tmc_max_tight_ratio: float
     tmc_min_seconds_remaining: float
     tmc_min_volatility: float
-    tmc_block_confirming_momentum: bool
-    tmc_momentum_threshold: float
+    tmc_min_edge: float  # minimum model edge to fire signal
+    tmc_min_ask: float  # minimum ask to avoid illiquid extremes
 
     @classmethod
     def from_env(cls, env_path: str | None = None) -> "Config":
@@ -121,18 +118,15 @@ class Config:
             tmc_enabled=_bool(os.getenv("TMC_ENABLED", "false")),
             tmc_max_investment=float(os.getenv("TMC_MAX_INVESTMENT", "2.0")),
             tmc_entry_window=float(os.getenv("TMC_ENTRY_WINDOW", "90.0")),
-            tmc_execution_window=float(os.getenv("TMC_EXECUTION_WINDOW", "5.0")),
+            tmc_execution_window=float(os.getenv("TMC_EXECUTION_WINDOW", "11.0")),
             tmc_max_daily_loss=float(os.getenv("TMC_MAX_DAILY_LOSS", "20.0")),
             tmc_discovery_interval=int(os.getenv("TMC_DISCOVERY_INTERVAL", "30")),
             tmc_crypto_assets=os.getenv("TMC_CRYPTO_ASSETS", "BTC,ETH,SOL,XRP"),
             tmc_volatility_window=int(os.getenv("TMC_VOLATILITY_WINDOW", "300")),
-            tmc_max_entry_ask=float(os.getenv("TMC_MAX_ENTRY_ASK", "0.30")),
-            tmc_min_cheap_ask=float(os.getenv("TMC_MIN_CHEAP_ASK", "0.05")),
-            tmc_max_tight_ratio=float(os.getenv("TMC_MAX_TIGHT_RATIO", "0.40")),
             tmc_min_seconds_remaining=float(os.getenv("TMC_MIN_SECONDS_REMAINING", "7.0")),
             tmc_min_volatility=float(os.getenv("TMC_MIN_VOLATILITY", "0.00007")),
-            tmc_block_confirming_momentum=_bool(os.getenv("TMC_BLOCK_CONFIRMING_MOMENTUM", "true")),
-            tmc_momentum_threshold=float(os.getenv("TMC_MOMENTUM_THRESHOLD", "0.0")),
+            tmc_min_edge=float(os.getenv("TMC_MIN_EDGE", "0.05")),
+            tmc_min_ask=float(os.getenv("TMC_MIN_ASK", "0.03")),
         )
 
     @property

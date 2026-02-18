@@ -38,7 +38,7 @@ TRADE_COLS = [
     "buy_side", "buy_ask", "yes_ask", "no_ask",
     "amount", "total_cost", "payout", "net_return", "return_pct",
     "strike_price", "current_crypto_price", "final_crypto_price",
-    "distance", "expected_move", "tight_ratio", "avg_spread",
+    "model_prob", "market_prob", "edge", "volatility",
     "seconds_remaining", "dry_run", "condition_id",
 ]
 
@@ -59,14 +59,8 @@ def export_trades(trades):
 SHADOW_COLS = [
     "timestamp", "asset", "question", "outcome", "was_traded",
     "strike_price", "final_price",
-    "tight_ratio", "volatility",
+    "volatility", "model_prob", "market_prob", "edge", "bet_side",
     "final_yes", "final_no",
-    "expected_move_exec_window",
-    "price_at_exec_window_start",
-    "price_crossed_strike", "min_distance_to_strike", "max_distance_to_strike",
-    "price_momentum_last_3s", "reversal_detected", "majority_at_exec_start",
-    "cheap_side_at_exec_start", "odds_momentum",
-    "potential_payout_ratio", "signal_would_fire_v2",
     "total_snapshots", "num_skipped_signals", "condition_id",
 ]
 
@@ -88,10 +82,9 @@ def export_shadow_markets(shadow):
 SIGNAL_COLS = [
     "market_timestamp", "market_question", "asset", "condition_id",
     "signal_timestamp", "remaining",
-    "in_execution_window", "would_have_fired",
-    "distance", "raw_expected_move",
+    "in_execution_window",
     "current_price", "strike", "yes_price", "no_price",
-    "tight_ratio", "price_side",
+    "volatility", "model_prob", "market_prob", "edge", "bet_side",
     "skip_reason",
 ]
 
@@ -212,7 +205,7 @@ def print_summary(trades, shadow):
 
     if shadow:
         traded = [s for s in shadow if s.get("was_traded")]
-        crossed = [s for s in shadow if s.get("price_crossed_strike")]
+        with_edge = [s for s in shadow if s.get("edge") is not None]
         assets_s = {}
         for s in shadow:
             a = s.get("asset", _extract_asset(s["question"]))
@@ -220,14 +213,19 @@ def print_summary(trades, shadow):
 
         print(f"\nSHADOW: {len(shadow)} mercados observados")
         print(f"  Traded:          {len(traded)}")
-        print(f"  Price crossed:   {len(crossed)} ({len(crossed)/len(shadow)*100:.0f}%)")
-        print(f"  Avg tight_ratio: {sum(s['tight_ratio'] for s in shadow)/len(shadow):.3f}")
-        print(f"  Avg volatility:  {sum(s['volatility'] for s in shadow)/len(shadow):.6f}")
+        print(f"  With model edge: {len(with_edge)} ({len(with_edge)/len(shadow)*100:.0f}%)")
+        vols = [s["volatility"] for s in shadow if s.get("volatility")]
+        if vols:
+            print(f"  Avg volatility:  {sum(vols)/len(vols):.6f}")
+        edges = [s["edge"] for s in with_edge]
+        if edges:
+            print(f"  Avg model edge:  {sum(edges)/len(edges):.3f}")
         print(f"\n  Por asset:")
         for asset, records in sorted(assets_s.items()):
             n = len(records)
-            crossed_n = sum(1 for r in records if r.get("price_crossed_strike"))
-            print(f"    {asset:5s}  {n:3d} markets | {crossed_n} crossed strike")
+            edge_recs = [r for r in records if r.get("edge") is not None]
+            avg_e = sum(r["edge"] for r in edge_recs) / len(edge_recs) if edge_recs else 0
+            print(f"    {asset:5s}  {n:3d} markets | avg edge {avg_e:+.3f}")
 
     print()
 

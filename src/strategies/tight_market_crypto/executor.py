@@ -56,8 +56,8 @@ class TightMarketCryptoExecutor:
                 f"[TMC] [DRY RUN] Would buy "
                 f"{opp.buy_side}@{opp.buy_ask:.4f} ${opp.amount:.2f} "
                 f"on '{opp.market.question[:50]}' | "
-                f"strike=${opp.strike_price:,.2f} dist=${opp.distance:.2f} "
-                f"expected_move=${opp.expected_move:.2f}"
+                f"strike=${opp.strike_price:,.2f} "
+                f"model_prob={opp.model_prob:.3f} edge={opp.edge:.3f}"
             )
             result = TightMarketTradeResult(
                 opportunity=opp,
@@ -79,7 +79,7 @@ class TightMarketCryptoExecutor:
             f"daily_loss=${self._daily_loss:.2f}"
         )
         try:
-            # Buy underdog — single market order
+            # Buy favorite — single market order
             logger.info(
                 f"[TMC] Creating {opp.buy_side} market order: "
                 f"token={opp.buy_token_id[:12]}... amount=${opp.amount:.2f}"
@@ -215,10 +215,10 @@ class TightMarketCryptoExecutor:
             "total_cost": result.opportunity.total_cost,
             "strike_price": result.opportunity.strike_price,
             "current_crypto_price": result.opportunity.current_crypto_price,
-            "distance": result.opportunity.distance,
-            "expected_move": result.opportunity.expected_move,
-            "tight_ratio": result.opportunity.profile.tight_ratio,
-            "avg_spread": result.opportunity.profile.avg_spread,
+            "model_prob": result.opportunity.model_prob,
+            "market_prob": result.opportunity.market_prob,
+            "edge": result.opportunity.edge,
+            "volatility": result.opportunity.volatility,
             "seconds_remaining": result.opportunity.profile.seconds_remaining,
             "success": result.success,
             "order_ids": result.order_ids,
