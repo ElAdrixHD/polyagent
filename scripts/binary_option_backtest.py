@@ -403,6 +403,105 @@ def main():
             f"crossed={r['crossed']}"
         )
 
+    # ── Filtered analysis: exclude illiquid extremes ────────────────────────
+
+    print("\n" + "=" * 70)
+    print("[8] REALISTIC FILTERED ANALYSIS (ask >= 0.03, excludes illiquid)")
+    print("=" * 70)
+
+    filtered = [r for r in results if r["bet_ask"] >= 0.03]
+    print(f"  Filtered: {len(filtered)} markets (excluded {len(results) - len(filtered)} illiquid)")
+
+    print("\n  --- PnL BY EDGE THRESHOLD (filtered) ---")
+    print(
+        f"  {'thresh':>7s} {'n':>5s} {'wins':>5s} {'WR':>7s} "
+        f"{'PnL':>9s} {'avgPnL':>8s} {'avgPay':>7s}"
+    )
+    for t in [0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50]:
+        b = [r for r in filtered if r["edge"] > t]
+        if not b:
+            continue
+        w = sum(1 for r in b if r["win"])
+        p = sum(r["pnl"] for r in b)
+        ap = sum(r["payout"] for r in b) / len(b)
+        marker = "  <<<" if p > 0 else ""
+        print(
+            f"  {t:>7.2f} {len(b):>5d} {w:>5d} {w/len(b)*100:>6.1f}% "
+            f"{p:>+9.2f} {p/len(b):>+8.4f} {ap:>7.1f}x{marker}"
+        )
+
+    print("\n  --- AGAINST vs WITH MAJORITY (filtered, edge > 0.15) ---")
+    bets_f = [r for r in filtered if r["edge"] > 0.15]
+    for label, sub in [
+        ("AGAINST majority", [r for r in bets_f if r["bet_side"] != r["majority"]]),
+        ("WITH majority", [r for r in bets_f if r["bet_side"] == r["majority"]]),
+    ]:
+        if not sub:
+            print(f"  {label:20s}: n=0")
+            continue
+        w = sum(1 for r in sub if r["win"])
+        p = sum(r["pnl"] for r in sub)
+        ap = sum(r["payout"] for r in sub) / len(sub)
+        print(
+            f"  {label:20s}: n={len(sub):4d} wins={w:3d} "
+            f"WR={w/len(sub)*100:5.1f}% PnL={p:+.2f} avgPay={ap:.1f}x"
+        )
+
+    print("\n  --- BY ASSET (filtered, edge > 0.15) ---")
+    for asset in ["BTC", "ETH", "SOL", "XRP"]:
+        b = [r for r in filtered if r["edge"] > 0.15 and r["asset"] == asset]
+        if not b:
+            continue
+        w = sum(1 for r in b if r["win"])
+        p = sum(r["pnl"] for r in b)
+        print(
+            f"  {asset}: n={len(b):4d} w={w:3d} WR={w/len(b)*100:5.1f}% PnL={p:+.2f}"
+        )
+
+    print("\n  --- BY PAYOUT RANGE (filtered, edge > 0.15) ---")
+    for lo, hi, label in [
+        (1, 2, "1-2x"),
+        (2, 4, "2-4x"),
+        (4, 8, "4-8x"),
+        (8, 20, "8-20x"),
+        (20, 50, "20-50x"),
+    ]:
+        b = [r for r in bets_f if lo <= r["payout"] < hi]
+        if not b:
+            continue
+        w = sum(1 for r in b if r["win"])
+        p = sum(r["pnl"] for r in b)
+        print(
+            f"  pay {label:6s}: n={len(b):4d} w={w:3d} "
+            f"WR={w/len(b)*100:5.1f}% PnL={p:+.2f}"
+        )
+
+    # ── Section 9: bet WITH majority when model confirms ─────────────────
+
+    print("\n" + "-" * 70)
+    print("[9] BET WITH MAJORITY (model confirms favorite, filtered)")
+    print("-" * 70)
+    print("  Strategy: only bet when our model AGREES with the majority side")
+    print("  and the edge (model prob - market prob) exceeds threshold.\n")
+
+    with_maj_all = [r for r in filtered if r["bet_side"] == r["majority"]]
+    print(
+        f"  {'thresh':>7s} {'n':>5s} {'wins':>5s} {'WR':>7s} "
+        f"{'PnL':>9s} {'avgPnL':>8s} {'avgPay':>7s}"
+    )
+    for t in [0.0, 0.02, 0.05, 0.08, 0.10, 0.15, 0.20]:
+        b = [r for r in with_maj_all if r["edge"] > t]
+        if not b:
+            continue
+        w = sum(1 for r in b if r["win"])
+        p = sum(r["pnl"] for r in b)
+        ap = sum(r["payout"] for r in b) / len(b)
+        marker = "  <<<" if p > 0 else ""
+        print(
+            f"  {t:>7.2f} {len(b):>5d} {w:>5d} {w/len(b)*100:>6.1f}% "
+            f"{p:>+9.2f} {p/len(b):>+8.4f} {ap:>7.1f}x{marker}"
+        )
+
     print("\n" + "=" * 70)
     print("Backtest complete.")
     print("=" * 70)
