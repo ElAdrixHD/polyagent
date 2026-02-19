@@ -350,7 +350,128 @@ def analyze_shadow(shadow):
     print(f"\n  Total skipped signal evaluations: {total_skips}")
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# ── 8. Losing trades forensics ──────────────────────────────────────────────
+
+def analyze_losses(trades):
+    section("8. LOSING TRADES FORENSICS")
+    if not trades:
+        print("  No trades found.")
+        return
+
+    losses = [t for t in trades if safe_float(t.get("net_return"), 0) <= 0]
+    wins = [t for t in trades if safe_float(t.get("net_return"), 0) > 0]
+
+    if not losses:
+        print("  No losing trades! 🎯")
+        return
+
+    # --- Individual losing trades ---
+    subsection("Each Losing Trade")
+    print(f"\n  {'#':>3s}  {'Asset':>5s}  {'Side':>4s}  {'Edge':>6s}  {'ModelP':>7s}  {'Ask':>6s}  {'Vol':>10s}  {'T(s)':>5s}  {'Outcome':>7s}")
+    print(f"  {'-'*3}  {'-'*5}  {'-'*4}  {'-'*6}  {'-'*7}  {'-'*6}  {'-'*10}  {'-'*5}  {'-'*7}")
+    for i, t in enumerate(losses, 1):
+        asset = t.get("asset", "?")
+        side = t.get("buy_side", "?")
+        edge = safe_float(t.get("edge"), 0)
+        mp = safe_float(t.get("model_prob"), 0)
+        ask = safe_float(t.get("buy_ask"), 0)
+        vol = safe_float(t.get("volatility"), 0)
+        rem = safe_float(t.get("seconds_remaining"), 0)
+        outcome = t.get("outcome", "?")
+        print(f"  {i:3d}  {asset:>5s}  {side:>4s}  {edge:+5.3f}  {mp:6.3f}  {ask:5.3f}  {vol:10.6f}  {rem:5.1f}  {outcome:>7s}")
+
+    # --- Winners vs Losers comparison ---
+    subsection("Winners vs Losers — Averages")
+
+    def avg_field(records, field):
+        vals = [safe_float(r.get(field)) for r in records if safe_float(r.get(field)) is not None]
+        return sum(vals) / len(vals) if vals else 0
+
+    print(f"\n  {'Metric':>20s}  {'Winners':>10s}  {'Losers':>10s}  {'Delta':>10s}")
+    print(f"  {'-'*20}  {'-'*10}  {'-'*10}  {'-'*10}")
+
+    metrics = [
+        ("Avg edge", "edge", "+.3f"),
+        ("Avg model_prob", "model_prob", ".3f"),
+        ("Avg buy_ask", "buy_ask", ".3f"),
+        ("Avg volatility", "volatility", ".6f"),
+        ("Avg remaining(s)", "seconds_remaining", ".1f"),
+    ]
+    for label, field, fmt in metrics:
+        w = avg_field(wins, field)
+        l = avg_field(losses, field)
+        d = w - l
+        print(f"  {label:>20s}  {w:>10{fmt}}  {l:>10{fmt}}  {d:>+10{fmt}}")
+
+    # Asset vulnerability
+    subsection("Loss Rate by Asset")
+    by_asset = defaultdict(lambda: {"wins": 0, "losses": 0})
+    for t in trades:
+        a = t.get("asset", "?")
+        if safe_float(t.get("net_return"), 0) > 0:
+            by_asset[a]["wins"] += 1
+        else:
+            by_asset[a]["losses"] += 1
+
+    print(f"\n  {'Asset':>6s}  {'Total':>5s}  {'Losses':>6s}  {'Loss%':>6s}")
+    print(f"  {'-'*6}  {'-'*5}  {'-'*6}  {'-'*6}")
+    for asset in sorted(by_asset):
+        d = by_asset[asset]
+        total = d["wins"] + d["losses"]
+        pct = d["losses"] / total * 100
+        flag = " ⚠️" if pct > 30 else ""
+        print(f"  {asset:>6s}  {total:5d}  {d['losses']:6d}  {pct:5.1f}%{flag}")
+
+    # --- Contrarian analysis ---
+    subsection("Contrarian Simulation (bet opposite on losers)")
+    print("\n  What if we had bet the OPPOSITE side on each losing trade?")
+
+    contrarian_pnl = 0
+    for t in losses:
+        buy_side = t.get("buy_side", "")
+        outcome = t.get("outcome", "")
+        opposite = "NO" if buy_side == "YES" else "YES"
+        yes_ask = safe_float(t.get("yes_ask"), 0.5)
+        no_ask = safe_float(t.get("no_ask"), 0.5)
+        opp_ask = no_ask if buy_side == "YES" else yes_ask
+
+        if opposite == outcome and opp_ask > 0:
+            payout = 1.0 / opp_ask
+            net = payout - 1.0
+        else:
+            net = -1.0
+
+        contrarian_pnl += net
+        won = "✓" if opposite == outcome else "✗"
+        asset = t.get("asset", "?")
+        edge = safe_float(t.get("edge"), 0)
+        print(f"    {asset:5s} bet {buy_side}→flip→{opposite} | opp_ask={opp_ask:.3f} | outcome={outcome} {won} | net=${net:+.2f}")
+
+    print(f"\n  Contrarian PnL on {len(losses)} flipped trades: ${contrarian_pnl:+.2f}")
+    print(f"  Original loss on those trades:                  ${-len(losses):.2f}")
+    print(f"  Net improvement if contrarian:                  ${contrarian_pnl + len(losses):+.2f}")
+
+    # --- Pattern detection ---
+    subsection("Common Loss Patterns")
+
+    # Low edge losses
+    low_edge = [t for t in losses if safe_float(t.get("edge"), 0) < 0.15]
+    high_edge = [t for t in losses if safe_float(t.get("edge"), 0) >= 0.15]
+    print(f"\n  Losses with edge < 0.15:  {len(low_edge)}/{len(losses)}")
+    print(f"  Losses with edge >= 0.15: {len(high_edge)}/{len(losses)}")
+
+    # Late entries
+    late = [t for t in losses if safe_float(t.get("seconds_remaining"), 99) < 10]
+    early = [t for t in losses if safe_float(t.get("seconds_remaining"), 0) >= 16]
+    print(f"  Losses at < 10s remaining: {len(late)}/{len(losses)}")
+    print(f"  Losses at >= 16s remaining: {len(early)}/{len(losses)}")
+
+    # Low volatility
+    low_vol = [t for t in losses if safe_float(t.get("volatility"), 1) < 0.00007]
+    print(f"  Losses with vol < 0.00007: {len(low_vol)}/{len(losses)}")
+
+
+
 
 def main():
     print("=" * 70)
@@ -373,6 +494,7 @@ def main():
     analyze_volatility(trades, shadow)
     analyze_timing(trades)
     analyze_shadow(shadow)
+    analyze_losses(trades)
 
     print(f"\n{'='*70}")
     print("  ANALYSIS COMPLETE")
