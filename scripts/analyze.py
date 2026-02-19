@@ -391,7 +391,7 @@ def analyze_losses(trades):
     print(f"  {'-'*20}  {'-'*10}  {'-'*10}  {'-'*10}")
 
     metrics = [
-        ("Avg edge", "edge", "+.3f"),
+        ("Avg edge", "edge", ".3f"),
         ("Avg model_prob", "model_prob", ".3f"),
         ("Avg buy_ask", "buy_ask", ".3f"),
         ("Avg volatility", "volatility", ".6f"),
