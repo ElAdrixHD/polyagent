@@ -401,7 +401,8 @@ def analyze_losses(trades):
         w = avg_field(wins, field)
         l = avg_field(losses, field)
         d = w - l
-        print(f"  {label:>20s}  {w:>10{fmt}}  {l:>10{fmt}}  {d:>+10{fmt}}")
+        d_str = f"{d:+{fmt}}"
+        print(f"  {label:>20s}  {w:>10{fmt}}  {l:>10{fmt}}  {d_str:>10s}")
 
     # Asset vulnerability
     subsection("Loss Rate by Asset")
