@@ -170,7 +170,7 @@ def analyze_edge(trades):
         wins = sum(1 for t in recs if safe_float(t.get("net_return"), 0) > 0)
         pnl = sum(safe_float(t.get("net_return"), 0) for t in recs)
         wr = wins / n * 100
-        marker = " <<" if thresh == 0.05 else ""
+        marker = " <<" if thresh == 0.10 else ""
         print(f"  {thresh:9.2f}  {n:4d}  {wr:5.1f}%  ${pnl:+7.2f}{marker}")
 
 
@@ -231,11 +231,11 @@ def analyze_volatility(trades, shadow):
     if trades:
         subsection("Win Rate by Volatility Bucket")
         vol_buckets = [
-            (0.00000, 0.00007, "<0.00007"),
+            (0.00000, 0.00004, "<0.00004"),
+            (0.00004, 0.00007, "0.00004–0.00007"),
             (0.00007, 0.00015, "0.00007–0.00015"),
             (0.00015, 0.00030, "0.00015–0.00030"),
-            (0.00030, 0.00100, "0.00030–0.00100"),
-            (0.00100, 1.00000, ">0.00100"),
+            (0.00030, 1.00000, ">0.00030"),
         ]
         print(f"\n  {'Vol Bucket':>18s}  {'N':>4s}  {'WR':>6s}  {'PnL':>9s}")
         print(f"  {'-'*18}  {'-'*4}  {'-'*6}  {'-'*9}")
@@ -260,11 +260,12 @@ def analyze_timing(trades):
         return
 
     buckets = [
-        (0, 5, "0–5s"),
-        (5, 7, "5–7s"),
+        (0, 7, "0–7s"),
         (7, 10, "7–10s"),
-        (10, 15, "10–15s"),
-        (15, 30, "15–30s"),
+        (10, 13, "10–13s"),
+        (13, 16, "13–16s"),
+        (16, 20, "16–20s"),
+        (20, 30, "20–30s"),
         (30, 90, "30–90s"),
     ]
 
