@@ -8,7 +8,7 @@ from pathlib import Path
 from src.core.client import PolymarketClient
 from src.core.config import Config
 
-from .binance_feed import BinancePriceFeed
+from .chainlink_feed import ChainlinkPriceFeed
 from .executor import TightMarketCryptoExecutor
 from .market_finder import CryptoMarketFinder
 from .signal_engine import SignalEngine
@@ -35,9 +35,9 @@ class TightMarketCryptoCoordinator:
         self._client = PolymarketClient(config)
         self._finder = CryptoMarketFinder(config)
         self._tracker = TightnessTracker(config)
-        self._binance_feed = BinancePriceFeed()
+        self._chainlink_feed = ChainlinkPriceFeed()
         self._signal_engine = SignalEngine(
-            config, self._tracker, self._client, self._binance_feed
+            config, self._tracker, self._client, self._chainlink_feed
         )
         self._executor = TightMarketCryptoExecutor(self._client, config)
 
@@ -49,7 +49,7 @@ class TightMarketCryptoCoordinator:
         logger.info(f"[TMC] Starting — tracking: {assets}")
 
         self._tracker.start()
-        self._binance_feed.start()
+        self._chainlink_feed.start()
 
         self._thread = threading.Thread(
             target=self._main_loop, name="TMC-Main", daemon=True
@@ -60,7 +60,7 @@ class TightMarketCryptoCoordinator:
         logger.info("[TMC] Shutting down...")
         self._running = False
         self._tracker.stop()
-        self._binance_feed.stop()
+        self._chainlink_feed.stop()
 
     def join(self, timeout: float = 5.0) -> None:
         if self._thread:
@@ -96,12 +96,18 @@ class TightMarketCryptoCoordinator:
             except Exception as e:
                 logger.error(f"[TMC] Main loop error: {e}")
 
-            time.sleep(0.5)
+            # Faster polling when markets are close to expiry
+            profiles = self._tracker.get_all_profiles()
+            min_remaining = min((p.seconds_remaining for p in profiles), default=999)
+            if min_remaining <= self.config.tmc_execution_window + 5:
+                time.sleep(0.15)
+            else:
+                time.sleep(0.5)
 
     def _discover_and_clean(self) -> None:
         now = datetime.now(timezone.utc)
 
-        # Clean expired markets and record outcomes using Binance price
+        # Clean expired markets and record outcomes using Chainlink price
         expired_count = 0
         traded_cids = self._executor.get_traded_condition_ids()
         for cid in list(self._tracker.tracked_condition_ids()):
@@ -117,12 +123,12 @@ class TightMarketCryptoCoordinator:
                     f"[TMC] Expired: {market.asset} '{market.question[:50]}'"
                 )
 
-                # Determine outcome from Binance price at window close vs strike
+                # Determine outcome from Chainlink price at window close vs strike
                 final_price = None
                 outcome = None
                 if market.strike_price is not None:
                     end_ts = market.end_date.timestamp()
-                    final_price = self._binance_feed.get_price_at(
+                    final_price = self._chainlink_feed.get_price_at(
                         market.asset, end_ts
                     )
                     if final_price is not None:
@@ -131,7 +137,7 @@ class TightMarketCryptoCoordinator:
                             cid, outcome, final_price
                         )
                         logger.info(
-                            f"[TMC] Resolved via Binance: {market.asset} "
+                            f"[TMC] Resolved via Chainlink: {market.asset} "
                             f"strike={market.strike_price:,.2f} "
                             f"final={final_price:,.2f} → {outcome}"
                         )
@@ -170,7 +176,7 @@ class TightMarketCryptoCoordinator:
             if not market or market.strike_price is not None:
                 continue
             if market.start_date and market.start_date <= now:
-                price = self._binance_feed.get_price_at(
+                price = self._chainlink_feed.get_price_at(
                     market.asset, market.start_date.timestamp()
                 )
                 if price is not None:
@@ -188,8 +194,7 @@ class TightMarketCryptoCoordinator:
                     f"[TMC] STATUS: {p.market.asset} '{p.market.question[:45]}' | "
                     f"{p.seconds_remaining:.0f}s left | "
                     f"snaps={len(p.snapshots)} | "
-                    f"YES={p.current_yes:.3f} NO={p.current_no:.3f} | "
-                    f"tight={p.tight_ratio:.0%}"
+                    f"YES={p.current_yes:.3f} NO={p.current_no:.3f}"
                 )
 
     def _save_shadow_entry(
@@ -202,7 +207,6 @@ class TightMarketCryptoCoordinator:
         was_traded: bool,
         skipped_signals: list[dict],
     ) -> None:
-        # --- Build execution window analysis ---
         exec_window = self.config.tmc_execution_window
         entry_window = self.config.tmc_entry_window
         end_ts = market.end_date.timestamp()
@@ -213,59 +217,31 @@ class TightMarketCryptoCoordinator:
         # Decimal precision based on asset price magnitude
         decimals = 6 if strike and strike < 10 else (4 if strike and strike < 1000 else 2)
 
-        # Crypto price trail during execution window (last N seconds)
+        # Crypto price trail during execution window
         crypto_exec_trail = []
         crypto_entry_trail = []
-        price_at_exec_start = None
-        price_crossed_strike = False
-        min_distance = None
-        max_distance = None
-        price_momentum = None  # $/sec in last 3 seconds
 
-        raw_exec_history = self._binance_feed.get_price_history(
+        raw_exec_history = self._chainlink_feed.get_price_history(
             market.asset, exec_start_ts, end_ts
         )
-        raw_entry_history = self._binance_feed.get_price_history(
+        raw_entry_history = self._chainlink_feed.get_price_history(
             market.asset, entry_start_ts, end_ts
         )
 
-        if raw_exec_history and strike is not None:
-            # Sampled trail: one point per second for compactness
+        if raw_exec_history:
             seen_seconds = set()
             for ts, px in raw_exec_history:
                 sec_key = int(ts)
                 if sec_key not in seen_seconds:
                     seen_seconds.add(sec_key)
-                    crypto_exec_trail.append({
-                        "t": round(end_ts - ts, 1),  # seconds before expiry
+                    trail_entry = {
+                        "t": round(end_ts - ts, 1),
                         "price": round(px, decimals),
-                        "dist": round(abs(px - strike), decimals),
-                    })
+                    }
+                    if strike is not None:
+                        trail_entry["dist"] = round(abs(px - strike), decimals)
+                    crypto_exec_trail.append(trail_entry)
 
-            price_at_exec_start = round(raw_exec_history[0][1], decimals)
-
-            # Strike crossing detection
-            prev_side = None
-            for _, px in raw_exec_history:
-                side = "above" if px > strike else "below"
-                if prev_side is not None and side != prev_side:
-                    price_crossed_strike = True
-                    break
-                prev_side = side
-
-            # Min/max distance to strike during execution window
-            distances = [abs(px - strike) for _, px in raw_exec_history]
-            min_distance = round(min(distances), decimals)
-            max_distance = round(max(distances), decimals)
-
-            # Price momentum: avg $/sec over last 3 seconds of data
-            last_3s = [(ts, px) for ts, px in raw_exec_history if ts >= end_ts - 3]
-            if len(last_3s) >= 2:
-                dt = last_3s[-1][0] - last_3s[0][0]
-                dp = last_3s[-1][1] - last_3s[0][1]
-                price_momentum = round(dp / dt, decimals) if dt > 0 else None
-
-        # Sampled entry-window trail (one per ~5 seconds to keep compact)
         if raw_entry_history:
             seen_5s = set()
             for ts, px in raw_entry_history:
@@ -293,7 +269,6 @@ class TightMarketCryptoCoordinator:
                             "no": round(snap.no_price, 4),
                         })
 
-            # Entry-window odds sampled every ~5 seconds
             seen_5s_odds = set()
             for snap in profile.snapshots:
                 if snap.timestamp >= entry_start_ts:
@@ -306,24 +281,22 @@ class TightMarketCryptoCoordinator:
                             "no": round(snap.no_price, 4),
                         })
 
-        # Volatility metrics at expiry
-        volatility = self._binance_feed.get_volatility(
+        # Volatility at expiry
+        volatility = self._chainlink_feed.get_volatility(
             market.asset, self.config.tmc_volatility_window
         )
-        expected_move_5s = self._binance_feed.get_expected_move(
-            market.asset, exec_window, self.config.tmc_volatility_window
-        )
 
-        # --- Reversal analysis ---
-        # Did outcome flip in last seconds? Compare majority side at exec_start vs final
-        reversal_detected = False
-        majority_at_exec_start = None
-        if odds_exec_trail:
-            first = odds_exec_trail[0] if odds_exec_trail else None
-            if first:
-                majority_at_exec_start = "YES" if first["yes"] > first["no"] else "NO"
-            if majority_at_exec_start and outcome:
-                reversal_detected = majority_at_exec_start != outcome
+        # Extract model fields from skipped signals (last evaluation)
+        model_prob = None
+        market_prob = None
+        edge = None
+        bet_side = None
+        if skipped_signals:
+            last_skip = skipped_signals[-1]
+            model_prob = last_skip.get("model_prob")
+            market_prob = last_skip.get("market_prob")
+            edge = last_skip.get("edge")
+            bet_side = last_skip.get("bet_side")
 
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -335,20 +308,15 @@ class TightMarketCryptoCoordinator:
             "outcome": outcome,
             "was_traded": was_traded,
             "total_snapshots": len(profile.snapshots) if profile else 0,
-            "tight_ratio": profile.tight_ratio if profile else None,
             "final_yes": profile.current_yes if profile else None,
             "final_no": profile.current_no if profile else None,
-            # --- New: execution window analysis ---
+            # Black-Scholes model fields
             "volatility": round(volatility, 8) if volatility else None,
-            "expected_move_exec_window": round(expected_move_5s, decimals) if expected_move_5s else None,
-            "price_at_exec_window_start": price_at_exec_start,
-            "price_crossed_strike": price_crossed_strike,
-            "min_distance_to_strike": min_distance,
-            "max_distance_to_strike": max_distance,
-            "price_momentum_last_3s": price_momentum,
-            "reversal_detected": reversal_detected,
-            "majority_at_exec_start": majority_at_exec_start,
-            # --- Trails (compact, 1/sec for exec window, 1/5sec for entry window) ---
+            "model_prob": model_prob,
+            "market_prob": market_prob,
+            "edge": edge,
+            "bet_side": bet_side,
+            # Trails (compact, 1/sec for exec window, 1/5sec for entry window)
             "crypto_price_trail_exec_window": crypto_exec_trail,
             "crypto_price_trail_entry_window": crypto_entry_trail,
             "odds_trail_exec_window": odds_exec_trail,
@@ -368,5 +336,6 @@ class TightMarketCryptoCoordinator:
         SHADOW_FILE.write_text(json.dumps(entries, indent=2))
         logger.info(
             f"[TMC] Shadow logged: {market.asset} '{market.question[:40]}' | "
-            f"outcome={outcome} traded={was_traded} skips={len(skipped_signals)}"
+            f"outcome={outcome} traded={was_traded} skips={len(skipped_signals)} | "
+            f"model_prob={model_prob} edge={edge}"
         )

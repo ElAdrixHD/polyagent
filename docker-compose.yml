@@ -28,13 +28,13 @@ services:
     profiles:
       - tools
 
-  reversal:
+  backtest:
     build: .
-    container_name: polyagent-reversal
+    container_name: polyagent-backtest
     env_file: .env
     volumes:
       - polyagent-data:/app/data
-    command: python scripts/reversal_analysis.py
+    command: python scripts/binary_option_backtest.py
     profiles:
       - tools
 

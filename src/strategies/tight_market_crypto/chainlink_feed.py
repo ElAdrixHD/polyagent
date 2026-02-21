@@ -9,53 +9,68 @@ import websocket
 
 logger = logging.getLogger("polyagent")
 
-# Binance miniTicker streams for supported assets
-BINANCE_WS_URL = (
-    "wss://stream.binance.com:9443/ws/"
-    "btcusdt@miniTicker/ethusdt@miniTicker/"
-    "solusdt@miniTicker/xrpusdt@miniTicker"
-)
+CHAINLINK_WS_URL = "wss://ws-live-data.polymarket.com"
+SUBSCRIBE_TOPIC = "crypto_prices_chainlink"
+RESPONSE_TOPIC = "crypto_prices"
 
-# Map Binance symbol to canonical asset name
-SYMBOL_TO_ASSET = {
-    "BTCUSDT": "BTC",
-    "ETHUSDT": "ETH",
-    "SOLUSDT": "SOL",
-    "XRPUSDT": "XRP",
+# Map canonical asset name to Chainlink symbol
+ASSET_TO_SYMBOL = {
+    "BTC": "btc/usd",
+    "ETH": "eth/usd",
+    "SOL": "sol/usd",
+    "XRP": "xrp/usd",
 }
+SYMBOL_TO_ASSET = {v: k for k, v in ASSET_TO_SYMBOL.items()}
 
 MAX_HISTORY = 1800  # ~30 minutes at 1 update/sec
+POLL_INTERVAL = 0.5  # Re-subscribe every N seconds to get fresh data
 
 
-class BinancePriceFeed:
-    """Real-time crypto price feed from Binance WebSocket.
+class ChainlinkPriceFeed:
+    """Real-time crypto price feed from Polymarket's Chainlink RTDS WebSocket.
 
-    Tracks latest price and recent history per asset for volatility calculations.
+    Uses the exact same Chainlink data streams that Polymarket uses for
+    market resolution, eliminating price source mismatch.
+
+    The RTDS WS sends a batch of ~59 data points on each subscribe call
+    but does not stream continuously. We re-subscribe periodically to
+    maintain a live price feed.
     """
 
     def __init__(self) -> None:
         self._prices: dict[str, float] = {}  # asset -> latest price
         self._history: dict[str, deque[tuple[float, float]]] = {
-            asset: deque(maxlen=MAX_HISTORY) for asset in SYMBOL_TO_ASSET.values()
+            asset: deque(maxlen=MAX_HISTORY) for asset in ASSET_TO_SYMBOL
+        }
+        self._seen_ts: dict[str, set[int]] = {
+            asset: set() for asset in ASSET_TO_SYMBOL
         }
         self._lock = threading.Lock()
         self._running = False
-        self._thread: threading.Thread | None = None
+        self._ws_thread: threading.Thread | None = None
+        self._poll_thread: threading.Thread | None = None
+        self._ws: websocket.WebSocketApp | None = None
+        self._ws_ready = threading.Event()
         self._last_log = 0.0
 
     def start(self) -> None:
         if self._running:
             return
         self._running = True
-        self._thread = threading.Thread(
-            target=self._ws_loop, name="Binance-WS", daemon=True
+        self._ws_thread = threading.Thread(
+            target=self._ws_loop, name="Chainlink-WS", daemon=True
         )
-        self._thread.start()
-        logger.info("[TMC] Binance price feed starting...")
+        self._ws_thread.start()
+        self._poll_thread = threading.Thread(
+            target=self._poll_loop, name="Chainlink-Poll", daemon=True
+        )
+        self._poll_thread.start()
+        logger.info("[TMC] Chainlink price feed starting...")
 
     def stop(self) -> None:
         self._running = False
-        if hasattr(self, "_ws") and self._ws:
+        self._ws_ready.set()  # unblock poll loop
+        if self._ws:
             try:
                 self._ws.close()
             except Exception:
@@ -174,57 +189,125 @@ class BinancePriceFeed:
 
     def _ws_loop(self) -> None:
         while self._running:
+            self._ws_ready.clear()
             try:
                 self._connect()
             except Exception as e:
-                logger.error(f"[TMC] Binance WS error: {e}")
+                logger.error(f"[TMC] Chainlink WS error: {e}")
+            self._ws_ready.clear()
             if self._running:
                 time.sleep(2)
 
+    def _poll_loop(self) -> None:
+        """Periodically re-subscribe to get fresh Chainlink prices."""
+        while self._running:
+            self._ws_ready.wait(timeout=10)
+            if not self._running:
+                break
+            time.sleep(POLL_INTERVAL)
+            if self._running and self._ws:
+                try:
+                    self._send_subscriptions(self._ws)
+                except Exception:
+                    pass
+
     def _connect(self) -> None:
         self._ws = websocket.WebSocketApp(
-            BINANCE_WS_URL,
-            on_open=lambda ws: logger.info("[TMC] Binance WS connected"),
+            CHAINLINK_WS_URL,
+            on_open=lambda ws: self._on_open(ws),
             on_message=lambda ws, msg: self._on_message(msg),
-            on_error=lambda ws, err: logger.debug(f"[TMC] Binance WS error: {err}"),
+            on_error=lambda ws, err: logger.debug(f"[TMC] Chainlink WS error: {err}"),
             on_close=lambda ws, code, msg: logger.debug(
-                f"[TMC] Binance WS closed: {code} {msg}"
+                f"[TMC] Chainlink WS closed: {code} {msg}"
             ),
         )
         self._ws.run_forever(ping_interval=30, ping_timeout=10)
 
+    def _on_open(self, ws) -> None:
+        logger.info("[TMC] Chainlink WS connected, subscribing...")
+        self._send_subscriptions(ws)
+        self._ws_ready.set()
+
+    def _send_subscriptions(self, ws) -> None:
+        for symbol in ASSET_TO_SYMBOL.values():
+            sub_msg = json.dumps({
+                "action": "subscribe",
+                "subscriptions": [{
+                    "topic": SUBSCRIBE_TOPIC,
+                    "type": "*",
+                    "filters": json.dumps({"symbol": symbol}),
+                }],
+            })
+            ws.send(sub_msg)
+
     def _on_message(self, message: str) -> None:
+        if not message or not message.strip():
+            return
+
         try:
             data = json.loads(message)
         except json.JSONDecodeError:
             return
 
-        symbol = data.get("s", "")  # e.g. "BTCUSDT"
+        # Response topic is "crypto_prices" (not the subscribe topic)
+        if data.get("topic") != RESPONSE_TOPIC:
+            return
+
+        payload = data.get("payload")
+        if not payload:
+            return
+
+        symbol = payload.get("symbol", "")
         asset = SYMBOL_TO_ASSET.get(symbol)
         if not asset:
             return
 
-        try:
-            price = float(data.get("c", 0))  # "c" = close price in miniTicker
-        except (ValueError, TypeError):
+        # Payload contains a "data" array of {timestamp, value} objects
+        points = payload.get("data")
+        if not isinstance(points, list) or not points:
             return
 
-        if price <= 0:
-            return
-
-        now = time.time()
+        new_count = 0
         with self._lock:
-            self._prices[asset] = price
-            self._history[asset].append((now, price))
+            seen = self._seen_ts[asset]
+            for point in points:
+                try:
+                    ts_ms = int(point["timestamp"])
+                    price = float(point["value"])
+                except (KeyError, ValueError, TypeError):
+                    continue
+
+                if price <= 0:
+                    continue
+
+                # Deduplicate by timestamp (ms precision)
+                if ts_ms in seen:
+                    continue
+                seen.add(ts_ms)
+
+                ts_sec = ts_ms / 1000.0
+                self._prices[asset] = price
+                self._history[asset].append((ts_sec, price))
+                new_count += 1
+
+            # Prune seen_ts to avoid memory growth (keep last 5 min)
+            if len(seen) > 600:
+                cutoff_ms = int((time.time() - 300) * 1000)
+                to_remove = {t for t in seen if t < cutoff_ms}
+                seen -= to_remove
 
         # Log prices every 30 seconds
-        if now - self._last_log >= 30:
-            self._last_log = now
+        wall_now = time.time()
+        if wall_now - self._last_log >= 30:
+            self._last_log = wall_now
             with self._lock:
                 parts = []
                 for a in ("BTC", "ETH", "SOL", "XRP"):
                     p = self._prices.get(a)
                     if p is not None:
                         parts.append(f"{a}=${p:,.2f}")
+                    hist = self._history.get(a)
+                    hist_len = len(hist) if hist else 0
+                    parts.append(f"({hist_len}pts)")
             if parts:
-                logger.info(f"[TMC] Binance: {' '.join(parts)}")
+                logger.info(f"[TMC] Chainlink: {' '.join(parts)}")
