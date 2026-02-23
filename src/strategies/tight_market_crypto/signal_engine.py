@@ -145,11 +145,12 @@ class SignalEngine:
             # === BLACK-SCHOLES ENTRY GATES ===
 
             # Gate 1: Need valid volatility
-            if volatility is None or volatility < self.config.tmc_min_volatility:
+            min_vol = self.config.get_tmc_min_volatility(asset)
+            if volatility is None or volatility < min_vol:
                 self._record_skip(ctx, skip_reason="low_volatility")
                 logger.info(
                     f"[TMC] SKIP {asset} '{q}' | "
-                    f"vol={volatility} < min {self.config.tmc_min_volatility} | "
+                    f"vol={volatility} < min {min_vol} | "
                     f"remaining={remaining:.0f}s"
                 )
                 continue
@@ -208,11 +209,12 @@ class SignalEngine:
                 continue
 
             # Gate 6: Minimum edge threshold
-            if edge < self.config.tmc_min_edge:
+            min_edge = self.config.get_tmc_min_edge(asset)
+            if edge < min_edge:
                 self._record_skip(ctx, skip_reason="edge_too_low")
                 logger.info(
                     f"[TMC] SKIP {asset} '{q}' | "
-                    f"edge={edge:.3f} < min {self.config.tmc_min_edge} | "
+                    f"edge={edge:.3f} < min {min_edge} | "
                     f"model_prob={model_prob:.3f} market={market_prob:.3f} | "
                     f"remaining={remaining:.0f}s"
                 )

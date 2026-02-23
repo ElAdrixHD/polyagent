@@ -54,6 +54,15 @@ def main() -> None:
         logger.info(f"  Min ask: {config.tmc_min_ask}")
         logger.info(f"  Assets: {config.tmc_crypto_assets}")
         logger.info(f"  Max daily loss: ${config.tmc_max_daily_loss:.2f}")
+        if config.tmc_asset_overrides:
+            for asset in sorted(config.tmc_asset_overrides):
+                ov = config.tmc_asset_overrides[asset]
+                parts = []
+                if "min_vol" in ov:
+                    parts.append(f"vol≥{ov['min_vol']}")
+                if "min_edge" in ov:
+                    parts.append(f"edge≥{ov['min_edge']}")
+                logger.info(f"  {asset} override: {', '.join(parts)}")
         tmc_coordinator = TightMarketCryptoCoordinator(config)
     else:
         logger.info(f"Tight Market Crypto: {Fore.RED}disabled{Style.RESET_ALL}")

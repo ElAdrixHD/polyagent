@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 
 from dotenv import load_dotenv
@@ -57,6 +57,19 @@ class Config:
     tmc_min_volatility: float
     tmc_min_edge: float  # minimum model edge to fire signal
     tmc_min_ask: float  # minimum ask to avoid illiquid extremes
+
+    # Per-crypto overrides: {"BTC": {"min_vol": 0.0001, "min_edge": 0.15}, ...}
+    tmc_asset_overrides: dict = field(default_factory=dict)
+
+    def get_tmc_min_volatility(self, asset: str) -> float:
+        """Return per-crypto min_volatility if set, else global fallback."""
+        overrides = self.tmc_asset_overrides.get(asset.upper(), {})
+        return overrides.get("min_vol", self.tmc_min_volatility)
+
+    def get_tmc_min_edge(self, asset: str) -> float:
+        """Return per-crypto min_edge if set, else global fallback."""
+        overrides = self.tmc_asset_overrides.get(asset.upper(), {})
+        return overrides.get("min_edge", self.tmc_min_edge)
 
     @classmethod
     def from_env(cls, env_path: str | None = None) -> "Config":
@@ -127,7 +140,22 @@ class Config:
             tmc_min_volatility=float(os.getenv("TMC_MIN_VOLATILITY", "0.00007")),
             tmc_min_edge=float(os.getenv("TMC_MIN_EDGE", "0.05")),
             tmc_min_ask=float(os.getenv("TMC_MIN_ASK", "0.03")),
+            tmc_asset_overrides=cls._parse_asset_overrides(),
         )
+
+    @staticmethod
+    def _parse_asset_overrides() -> dict:
+        """Parse per-crypto env vars like TMC_MIN_VOL_BTC, TMC_MIN_EDGE_ETH."""
+        overrides: dict[str, dict] = {}
+        for key, val in os.environ.items():
+            key_upper = key.upper()
+            if key_upper.startswith("TMC_MIN_VOL_"):
+                asset = key_upper.replace("TMC_MIN_VOL_", "")
+                overrides.setdefault(asset, {})["min_vol"] = float(val)
+            elif key_upper.startswith("TMC_MIN_EDGE_"):
+                asset = key_upper.replace("TMC_MIN_EDGE_", "")
+                overrides.setdefault(asset, {})["min_edge"] = float(val)
+        return overrides
 
     @property
     def has_api_credentials(self) -> bool:
