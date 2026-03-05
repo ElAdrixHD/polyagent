@@ -54,7 +54,8 @@ def calc_prob_above(price: float, strike: float, vol: float, T: float) -> float:
     denom = vol * math.sqrt(T)
     if denom < 1e-12:
         return 1.0 if price > strike else 0.0
-    d2 = math.log(price / strike) / denom
+    # Full d₂ with drift term: d₂ = [ln(S/K) - ½σ²T] / (σ√T)
+    d2 = (math.log(price / strike) - 0.5 * vol * vol * T) / denom
     return norm_cdf(d2)
 
 
@@ -115,9 +116,10 @@ class SignalEngine:
             strike = profile.market.strike_price
             in_exec = remaining <= self.config.tmc_execution_window
 
-            # Compute model probability
+            # Compute model probability (capped to avoid overconfident extremes)
             if volatility is not None and volatility > 0:
-                model_prob = calc_prob_above(current_price, strike, volatility, remaining)
+                raw_prob = calc_prob_above(current_price, strike, volatility, remaining)
+                model_prob = max(0.10, min(0.90, raw_prob))
             else:
                 model_prob = None
 
